@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+specterlan/__init__.py
+specterlan/ai.py
+specterlan/models.py
+specterlan/network.py
+specterlan/store.py
+specterlan.egg-info/PKG-INFO
+specterlan.egg-info/SOURCES.txt
+specterlan.egg-info/dependency_links.txt
+specterlan.egg-info/requires.txt
+specterlan.egg-info/top_level.txt
+tests/test_network.py
