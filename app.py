@@ -6,10 +6,9 @@ import subprocess
 import xml.etree.ElementTree as ET
 from typing import get_args
 
-import httpx
 import streamlit as st
 
-from specterlan.ai import analyze_scan
+from specterlan.ai_ui import render_ai
 from specterlan.history_ui import render_history
 from specterlan.models import DeviceMetadata, DeviceType, ScanResult, TrustStatus
 from specterlan.network import detect_local_network, discover
@@ -195,40 +194,11 @@ if result:
                 hide_index=True,
             )
 
-    st.divider()
-    st.subheader("Ask the local ghost")
 
-    if st.button("Analyze with Ollama", use_container_width=True):
-        with st.spinner(f"Asking {model} to interpret the scan evidence..."):
-            try:
-                st.session_state.ai_report = analyze_scan(result, model=model)
-            except (RuntimeError, ValueError, KeyError, TypeError, httpx.InvalidURL) as exc:
-                st.error(str(exc))
-
-    report = st.session_state.ai_report
-    if report:
-        st.write(report.overview)
-
-        if report.attention_items:
-            st.markdown("#### Items to verify")
-            for item in report.attention_items:
-                label = f"{item.title} · {item.confidence} confidence"
-                with st.expander(label):
-                    st.write(item.explanation)
-                    if item.device_ips:
-                        st.caption("Devices: " + ", ".join(item.device_ips))
-
-        if report.questions_to_ask:
-            st.markdown("#### Questions for you")
-            for question in report.questions_to_ask:
-                st.write(f"• {question}")
-
-        if report.evidence_summary:
-            with st.expander("Evidence used"):
-                for line in report.evidence_summary:
-                    st.write(f"• {line}")
 else:
     st.info("Run a scan to refresh network presence. Saved observations are available in scan history below.")
 
 
 render_history(store, network)
+
+render_ai(store, network, model)

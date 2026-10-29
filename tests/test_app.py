@@ -1,6 +1,8 @@
+import json
 import sqlite3
 from pathlib import Path
 
+import httpx
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -224,3 +226,133 @@ def test_large_change_groups_are_compact_but_can_be_expanded(app, monkeypatch):
     assert not ui.exception
     assert any("192.168.1.15" in message.value for message in ui.text)
     assert len(store.recent_scans(NETWORK)) == 2
+
+
+def install_ui_ollama(monkeypatch):
+    real_client = httpx.Client
+    state = {"failure": None, "requests": []}
+    report = {
+        "overview": "Two devices were recorded in this subnet [current.scan].",
+        "notable_changes": [
+            {
+                "title": "New unreviewed device",
+                "explanation": "SpecterLAN newly observed 192.168.1.2; identify it manually.",
+                "evidence": ["current.device.0", "change.0"],
+                "confidence": "high",
+            }
+        ],
+        "devices_to_verify": [
+            {
+                "identity": "192.168.1.2",
+                "reason": "Its saved trust status is unreviewed.",
+                "evidence": ["current.device.0"],
+                "confidence": "medium",
+            }
+        ],
+        "suggested_checks": [
+            {
+                "check": "Identify which of your devices uses 192.168.1.2.",
+                "evidence": ["current.device.0"],
+            }
+        ],
+        "evidence_summary": [
+            {
+                "summary": "This report uses the latest saved subnet snapshot.",
+                "evidence": ["current.scan"],
+            }
+        ],
+    }
+
+    def handler(request):
+        state["requests"].append(request)
+        failure = state["failure"]
+        if failure == "connection":
+            raise httpx.ConnectError("not running", request=request)
+        if failure == "timeout":
+            raise httpx.ReadTimeout("timeout", request=request)
+        if failure == "missing":
+            return httpx.Response(404, json={"error": "model not found"})
+        if request.url.path == "/api/show":
+            return httpx.Response(
+                200,
+                json={
+                    "details": {"format": "gguf"},
+                    "model_info": {"general.architecture": "gemma3"},
+                },
+            )
+        payload = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": payload["model"],
+                "done": True,
+                "message": {"content": "{}" if failure == "invalid" else json.dumps(report)},
+            },
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.delenv("OLLAMA_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+    return state
+
+
+def analyze_button(ui):
+    return next(button for button in ui.button if button.label == "Analyze with Ollama")
+
+
+def test_ask_ghost_displays_structured_local_analysis_and_actual_model(app, monkeypatch):
+    ui, store = app
+    state = install_ui_ollama(monkeypatch)
+    next(widget for widget in ui.text_input if widget.label == "Ollama model").set_value(
+        "local-example:4b"
+    ).run()
+    analyze_button(ui).click().run()
+    assert not ui.exception
+    assert any(header.value == "Ask the Ghost" for header in ui.subheader)
+    assert any("no cloud AI" in caption.value for caption in ui.caption)
+    assert any("Model used: local-example:4b" in caption.value for caption in ui.caption)
+    for heading in ["Notable changes", "Devices to verify", "Suggested checks"]:
+        assert any(heading in item.value for item in ui.markdown)
+    assert any(expander.label == "Evidence used" for expander in ui.expander)
+    assert any("Two devices were recorded" in item.value for item in ui.text)
+    assert len(state["requests"]) == 2
+    assert len(store.recent_scans(NETWORK)) == 1
+
+    next(widget for widget in ui.text_input if widget.label == "Ollama model").set_value(
+        "another-local-model"
+    ).run()
+    assert any("Model used: local-example:4b" in caption.value for caption in ui.caption)
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        ("connection", "Start Ollama"),
+        ("timeout", "timed out"),
+        ("missing", "was not found"),
+        ("invalid", "structured report"),
+    ],
+)
+def test_ai_failure_clears_old_report_and_keeps_scanning_and_history(
+    app, monkeypatch, failure, expected
+):
+    ui, store = app
+    state = install_ui_ollama(monkeypatch)
+    analyze_button(ui).click().run()
+    assert any("Two devices were recorded" in item.value for item in ui.text)
+    state["failure"] = failure
+    analyze_button(ui).click().run()
+    assert not ui.exception
+    assert any(expected in item.value for item in ui.error)
+    assert not any("Two devices were recorded" in item.value for item in ui.text)
+    assert any(widget.label == "Inspect scan" for widget in ui.selectbox)
+    assert len(store.recent_scans(NETWORK)) == 1
+
+    ui.button[0].click().run()
+    assert not ui.exception
+    assert len(store.recent_scans(NETWORK)) == 2
+    assert any(widget.label == "Inspect scan" for widget in ui.selectbox)

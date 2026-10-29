@@ -144,6 +144,86 @@ The scan table stores online devices, so historical vanished lists are derived
 from the preceding scan. Labels on those entries come from that previous snapshot.
 No complete audit trail of edits between scans is recorded.
 
+## Local Ollama evidence analysis
+
+Open **Ask the Ghost** and select **Analyze with Ollama**. Analysis runs only
+through Ollama on this computer. The selected model defaults to `gemma3:4b`;
+the sidebar or `OLLAMA_MODEL` can override it. The report shows the model
+actually returned by Ollama and the IDs of the two analyzed scans.
+
+Only the latest saved scan and immediately preceding saved scan of the current
+subnet are used. No older device history is included. Stored first-observation
+state can identify a new device even on the first scan; without a previous scan,
+there is no evidence for vanished, returning, IP, classification, or metadata
+changes. Run another scan after editing labels to include those edits in analysis.
+
+The payload contains a fact catalog with stable IDs for the request:
+
+- Current and previous scan IDs, timestamps, subnet, scanner, and online counts.
+- Current and previous device observations: identity, IP, MAC visibility and
+  identity basis, hostname, vendor, friendly name, trust, effective device type,
+  user type override, automatic type, and classification reason where recorded.
+- Deterministic new, vanished, returning, IP-change, classification-change, and
+  metadata-change events, linked to the corresponding device facts.
+- Missing legacy fields stay unavailable rather than being presented as observed
+  defaults. Previous scans' vanished lists are not sent because they would expose
+  unnecessary older observations.
+
+The strict JSON response schema has five required sections:
+
+| Section | Contents |
+| --- | --- |
+| `overview` | Short interpretation with a supplied fact-ID citation |
+| `notable_changes` | Title, explanation, evidence IDs, confidence |
+| `devices_to_verify` | Identity or IP, reason, evidence IDs, confidence |
+| `suggested_checks` | A manual check and its supporting evidence IDs |
+| `evidence_summary` | A short summary and supporting evidence IDs |
+
+Confidence is `low`, `medium`, or `high`; it describes support for an observation,
+not a security risk score. The prompt distinguishes recorded observations from
+possibilities: vendor names are hints, classification is a suggestion, and trust
+is a user label. New means newly observed by SpecterLAN; vanished means absent
+from the latest scan. Neither establishes ownership, intent, or compromise.
+Device-supplied strings are treated as untrusted data, never instructions.
+
+Ollama receives the JSON schema through its structured-output API. The client
+then validates the schema, checks fact references and cited device identities,
+rejects addresses absent from evidence, and rejects prohibited security labels.
+The UI displays cited facts and the submitted evidence for review. These checks
+do not prove the truth of every generated sentence: a model may misinterpret a
+valid citation. Treat the output as an interpretation and verify it against the
+displayed observations. The conservative language filter can also reject a
+response that quotes a device name containing a prohibited word.
+
+`OLLAMA_URL` defaults to `http://localhost:11434` and must use a loopback
+endpoint (`localhost`, `127.0.0.1`, or `::1`). Proxy environment settings and
+redirects are disabled. Before sending scan evidence, SpecterLAN calls local
+`/api/show` and requires local GGUF model metadata without remote-model fields.
+Cloud-named, remote, or unverifiable models are refused. This assumes a trusted
+local Ollama installation; SpecterLAN cannot attest the server's internals.
+For additional server-side isolation, configure Ollama with `OLLAMA_NO_CLOUD=1`
+and restart Ollama; see the [Ollama local-only FAQ](https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features).
+
+Missing model, connection failure, timeout, invalid JSON/schema, and unsupported
+evidence produce a local error message. Failed output is not shown and does not
+affect scans or history. No model is automatically downloaded, no cloud fallback
+is attempted, and the application does not execute suggested checks.
+
+The default request timeout is 180 seconds. The request uses a 16,384-token
+context and a conservative input byte budget with output space reserved.
+Oversized evidence fails clearly instead of silently dropping devices.
+`OLLAMA_NUM_CTX` can increase the context if the local model and memory support
+it, for example in PowerShell:
+
+~~~powershell
+$env:OLLAMA_NUM_CTX="32768"
+~~~
+
+The byte budget is a conservative safeguard, not an exact tokenizer measurement.
+Large subnets or limited hardware may still require a different installed local
+model, more context, or more time. Tests mock Ollama and do not require a running
+model; live model quality and performance are not established by those tests.
+
 ## Why open innovation matters
 
 Network inventory data is sensitive. A home-network map can reveal device names,

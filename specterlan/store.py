@@ -122,6 +122,16 @@ class SnapshotStore:
             devices=[Device.model_validate(item) for item in json.loads(row["devices_json"])],
         )
 
+    def latest_scan_pair(self, network: str) -> tuple[SavedScan | None, SavedScan | None]:
+        """Read exactly the newest two snapshots of one subnet in a single query."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM scans WHERE network = ? ORDER BY id DESC LIMIT 2",
+                (network,),
+            ).fetchall()
+        scans = [self._read_scan(row) for row in rows]
+        return (scans[0] if scans else None, scans[1] if len(scans) > 1 else None)
+
     def recent_scans(self, network: str, limit: int = 10) -> list[SavedScan]:
         """Read saved observations unchanged; one extra row supplies vanished counts."""
         if not 1 <= limit <= 10:

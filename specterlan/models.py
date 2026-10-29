@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DeviceType = Literal[
     "router",
@@ -66,15 +66,37 @@ class SavedScan(ScanResult):
     id: int
 
 
-class AttentionItem(BaseModel):
-    title: str
-    explanation: str
-    device_ips: list[str] = Field(default_factory=list)
+class AIOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+
+class NotableChange(AIOutput):
+    title: str = Field(min_length=1)
+    explanation: str = Field(min_length=1)
+    evidence: list[str] = Field(min_length=1)
     confidence: Literal["low", "medium", "high"]
 
 
-class AIReport(BaseModel):
-    overview: str
-    attention_items: list[AttentionItem] = Field(default_factory=list)
-    questions_to_ask: list[str] = Field(default_factory=list)
-    evidence_summary: list[str] = Field(default_factory=list)
+class DeviceToVerify(AIOutput):
+    identity: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    evidence: list[str] = Field(min_length=1)
+    confidence: Literal["low", "medium", "high"]
+
+
+class SuggestedCheck(AIOutput):
+    check: str = Field(min_length=1)
+    evidence: list[str] = Field(min_length=1)
+
+
+class EvidenceSummary(AIOutput):
+    summary: str = Field(min_length=1)
+    evidence: list[str] = Field(min_length=1)
+
+
+class AIReport(AIOutput):
+    overview: str = Field(min_length=1)
+    notable_changes: list[NotableChange]
+    devices_to_verify: list[DeviceToVerify]
+    suggested_checks: list[SuggestedCheck]
+    evidence_summary: list[EvidenceSummary] = Field(min_length=1)
