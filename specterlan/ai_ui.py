@@ -6,6 +6,7 @@ import streamlit as st
 
 from .ai import AIAnalysisError, Analysis, analyze_latest
 from .store import SnapshotStore
+from .ui import show_ui_error
 
 
 def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = "live") -> None:
@@ -17,8 +18,8 @@ def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = 
     )
     try:
         current, previous = store.latest_scan_pair(network)
-    except (sqlite3.Error, ValueError) as exc:
-        st.error(f"Could not load evidence for analysis: {exc}")
+    except (sqlite3.Error, ValueError):
+        show_ui_error("Could not load evidence for analysis. Check local history access and refresh.")
         return
     if current is None:
         st.info("Run a scan of this subnet before asking the Ghost.")
@@ -41,8 +42,10 @@ def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = 
         with st.spinner(f"Asking local {model} to explain the saved evidence..."):
             try:
                 st.session_state.ai_report = analyze_latest(store, network, model=model)
-            except (AIAnalysisError, sqlite3.Error, ValueError) as exc:
+            except AIAnalysisError as exc:
                 st.error(str(exc))
+            except (sqlite3.Error, ValueError):
+                show_ui_error("Analysis could not load saved evidence. Check local history and retry.")
 
     analysis = st.session_state.ai_report
     if analysis is None:

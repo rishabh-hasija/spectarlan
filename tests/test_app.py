@@ -429,3 +429,34 @@ def test_empty_ai_sections_are_explicit_without_claiming_network_safety(app, mon
     assert any("No devices needing verification in this report." in item.value for item in ui.info)
     assert any("No notable changes in this report." in item.value for item in ui.caption)
     assert any("No additional checks suggested." in item.value for item in ui.caption)
+
+
+def test_ai_evidence_load_error_hides_internal_details(app, monkeypatch):
+    ui, store = app
+
+    def fail(*_):
+        raise sqlite3.OperationalError("private database path and internal detail")
+
+    monkeypatch.setattr(store, "latest_scan_pair", fail)
+    ui.run()
+    assert not ui.exception
+    assert any("Could not load evidence for analysis" in item.value for item in ui.error)
+    assert not any("private database path" in item.value for item in ui.error)
+    assert any(widget.label == "Inspect scan" for widget in ui.selectbox)
+
+
+@pytest.mark.parametrize("error", [sqlite3.OperationalError, ValueError])
+def test_ai_analysis_storage_error_hides_details_and_keeps_history(app, monkeypatch, error):
+    ui, store = app
+
+    def fail(*args, **kwargs):
+        raise error("private scan contents")
+
+    monkeypatch.setattr("specterlan.ai_ui.analyze_latest", fail)
+    analyze_button(ui).click().run()
+    assert not ui.exception
+    assert ui.session_state["ai_report"] is None
+    assert any("Analysis could not load saved evidence" in item.value for item in ui.error)
+    assert not any("private scan contents" in item.value for item in ui.error)
+    assert any(widget.label == "Inspect scan" for widget in ui.selectbox)
+    assert len(store.recent_scans(NETWORK)) == 1
