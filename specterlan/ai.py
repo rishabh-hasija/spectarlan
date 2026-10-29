@@ -199,12 +199,12 @@ def analyze_scan(
         ) from exc
     except httpx.ConnectError as exc:
         raise AIAnalysisError(
-            "Cannot connect to local Ollama. Start Ollama on this computer and retry."
+            "Cannot connect to local Ollama. Start Ollama on this computer, wait until it is ready, then retry."
         ) from exc
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise AIAnalysisError(
-                f"Local model '{model}' was not found. Install it in Ollama before retrying."
+                f"Local model '{model}' was not found. Install it using Ollama, or choose an installed model in the sidebar."
             ) from exc
         raise AIAnalysisError(
             f"Local Ollama request failed (HTTP {exc.response.status_code}). Scan history is unchanged."

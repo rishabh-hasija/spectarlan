@@ -10,9 +10,9 @@ from .store import SnapshotStore
 
 def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = "live") -> None:
     st.subheader("Ask the Ghost")
+    st.caption(f"Local-only · open-source AI · no cloud AI · Selected model: {model}")
     st.caption(
-        f"Local Ollama inference on this computer; no cloud AI. Selected model: {model}. "
-        "Uses only the latest saved scan and its preceding scan of this subnet. "
+        "Explains the latest two saved scans of this subnet. "
         "Run another scan after editing labels to include those edits."
     )
     try:
@@ -46,6 +46,9 @@ def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = 
 
     analysis = st.session_state.ai_report
     if analysis is None:
+        st.caption(
+            "Optional: ask your local model to explain the saved evidence. Scanning works without Ollama."
+        )
         return
     st.caption(
         f"Model used: {analysis.model} | latest saved scan #{analysis.current_scan_id} | "
@@ -53,24 +56,32 @@ def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = 
         "Local model interpretation; review the cited observations."
     )
     report = analysis.report
-    st.text(report.overview)
+    with st.container(border=True):
+        st.caption("OVERVIEW")
+        st.text(report.overview)
+    st.markdown(f"**Notable changes ({len(report.notable_changes)})**")
     if report.notable_changes:
-        st.markdown("**Notable changes**")
         for item in report.notable_changes:
             with st.expander(f"{item.title} | {item.confidence} confidence"):
                 st.text(item.explanation)
                 st.json({ref: analysis.evidence["facts"][ref] for ref in item.evidence})
+    else:
+        st.caption("No notable changes in this report.")
+    st.markdown(f"**Devices to verify ({len(report.devices_to_verify)})**")
     if report.devices_to_verify:
-        st.markdown("**Devices to verify**")
         for device in report.devices_to_verify:
             with st.expander(f"{device.identity} | {device.confidence} confidence"):
                 st.text(device.reason)
                 st.json({ref: analysis.evidence["facts"][ref] for ref in device.evidence})
+    else:
+        st.info("No devices needing verification in this report.")
+    st.markdown(f"**Suggested checks ({len(report.suggested_checks)})**")
     if report.suggested_checks:
-        st.markdown("**Suggested checks**")
         for check in report.suggested_checks:
             st.text(check.check)
             st.caption("Evidence: " + ", ".join(check.evidence))
+    else:
+        st.caption("No additional checks suggested.")
     with st.expander("Evidence used"):
         for item in report.evidence_summary:
             st.text(item.summary)

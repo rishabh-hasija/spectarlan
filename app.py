@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import subprocess
 import xml.etree.ElementTree as ET
@@ -14,6 +15,13 @@ from specterlan.history_ui import render_history
 from specterlan.models import DeviceMetadata, DeviceType, ScanResult, TrustStatus
 from specterlan.network import detect_local_network, discover
 from specterlan.store import SnapshotStore, device_identity
+from specterlan.ui import (
+    apply_style,
+    render_device_table,
+    render_footer,
+    render_overview,
+    show_ui_error,
+)
 
 st.set_page_config(
     page_title="SpecterLAN",
@@ -21,6 +29,7 @@ st.set_page_config(
     layout="wide",
 )
 
+apply_style()
 st.title("👻 SpecterLAN")
 st.caption("Find the ghosts on your network. Local discovery + local AI.")
 
@@ -40,18 +49,34 @@ st.session_state.active_mode = mode
 if mode == "Demo Séance":
     st.info("Demo Séance: simulated network evidence")
     if "demo_session" not in st.session_state:
-        st.session_state.demo_session = DemoSession()
+        try:
+            st.session_state.demo_session = DemoSession()
+        except (OSError, sqlite3.Error, ValueError):
+            show_ui_error("Demo could not start. Check temporary-folder permissions, then refresh.")
+            render_footer()
+            st.stop()
     demo = st.session_state.demo_session
     store = demo.store
     local_ip, network = DEMO_LOCAL_IP, DEMO_NETWORK
     view_key = f"demo:{demo.generation}"
 else:
-    store = SnapshotStore()
+    try:
+        store = SnapshotStore()
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+        show_ui_error(
+            "Could not open local scan history. Check database permissions and app compatibility."
+        )
+        render_footer()
+        st.stop()
     view_key = "live"
     try:
         local_ip, network = detect_local_network()
-    except (OSError, RuntimeError, ValueError) as exc:
-        st.error(f"Network detection failed: {exc}")
+    except (OSError, RuntimeError, ValueError):
+        show_ui_error(
+            "Network detection failed. Connect to a private Wi-Fi or Ethernet network, then refresh. "
+            "You can use Demo Séance without a network connection."
+        )
+        render_footer()
         st.stop()
 
 if st.session_state.scan_result is not None and st.session_state.scan_result.network != network:
@@ -66,11 +91,24 @@ with st.sidebar:
     if mode == "Live Network":
         st.caption("SpecterLAN scans only the private subnet containing this computer.")
         st.caption("MVP discovery does not perform a port scan.")
+        if shutil.which("nmap") is None:
+            st.info(
+                "Nmap unavailable. Scans use ping + the local neighbor table; Nmap is optional."
+            )
     else:
         st.caption("Fixed simulated subnet. No network detection or discovery is performed.")
 
+header_area = st.empty()
+with header_area.container():
+    render_overview(mode, network, st.session_state.scan_result)
+scan_status = None
+
 if mode == "Live Network":
     if st.button("Scan for apparitions", type="primary", use_container_width=True):
+        with header_area.container():
+            render_overview(
+                mode, network, st.session_state.scan_result, status="Scanning private subnet…"
+            )
         with st.spinner("Listening for devices on the local network..."):
             try:
                 devices, scanner = discover(network, local_ip)
@@ -92,8 +130,12 @@ if mode == "Live Network":
                 subprocess.SubprocessError,
                 ET.ParseError,
                 sqlite3.Error,
-            ) as exc:
-                st.error(str(exc))
+            ):
+                scan_status = "Scan failed · previous observations retained"
+                show_ui_error(
+                    "Scan failed. Check your network connection, scanner permissions, and local "
+                    "database access, then retry. Previous scan history is unchanged."
+                )
 
 else:
     controls = st.columns(3)
@@ -107,8 +149,8 @@ else:
     if reset_demo:
         try:
             demo.reset()
-        except sqlite3.Error as exc:
-            st.error(f"Could not reset demo data: {exc}")
+        except sqlite3.Error:
+            show_ui_error("Demo reset failed. Check temporary-folder permissions and retry.")
         else:
             st.session_state.scan_result = None
             st.session_state["result:Demo Séance"] = None
@@ -117,8 +159,8 @@ else:
     if start_demo or next_scan:
         try:
             st.session_state.scan_result = demo.advance()
-        except (sqlite3.Error, ValueError) as exc:
-            st.error(f"Could not advance the demo: {exc}")
+        except (sqlite3.Error, ValueError):
+            show_ui_error("Demo could not advance. Retry or reset the simulated session.")
         else:
             st.session_state.ai_report = None
             st.rerun()
@@ -130,9 +172,28 @@ if result:
     try:
         result.devices = store.apply_metadata(result.devices, result.network)
         result.vanished = store.apply_metadata(result.vanished, result.network)
-    except (sqlite3.Error, ValueError) as exc:
-        st.error(f"Could not load device metadata: {exc}")
+    except (sqlite3.Error, ValueError):
+        show_ui_error(
+            "Device labels could not load. Refresh the app or check local history access."
+        )
+        render_footer()
         st.stop()
+    with header_area.container():
+        render_overview(mode, network, result, status=scan_status)
+
+    st.subheader("Network presence")
+    st.caption(
+        "Presence: new · known · vanished. Trust: trusted · unreviewed · ignored. "
+        "Labels describe observations and your inventory, not security verdicts."
+    )
+    render_device_table(result.devices)
+    if not result.devices:
+        st.info(
+            "No devices responded in this snapshot. Sleeping or filtered devices may be missed."
+        )
+    if result.vanished:
+        with st.expander(f"Vanished since the previous scan ({len(result.vanished)})"):
+            render_device_table(result.vanished)
 
     editable = {
         device_identity(device, result.network): device
@@ -193,70 +254,25 @@ if result:
                                 trust_status=trust_status,
                             ),
                         )
-                    except (sqlite3.Error, ValueError) as exc:
-                        st.error(f"Could not save device metadata: {exc}")
+                    except (sqlite3.Error, ValueError):
+                        show_ui_error(
+                            "Device labels could not be saved. Check local database access and retry."
+                        )
                     else:
                         st.session_state.ai_report = None
                         st.rerun()
 
-    new_count = sum(device.state == "new" for device in result.devices)
-    unknown_count = sum(device.device_type == "unknown" for device in result.devices)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Online", len(result.devices))
-    c2.metric("New apparitions", new_count)
-    c3.metric("Unidentified", unknown_count)
-    c4.metric("Vanished", len(result.vanished))
-
-    st.subheader("Network presence")
-    rows = []
-    for device in result.devices:
-        rows.append(
-            {
-                "Friendly name": device.friendly_name,
-                "State": device.state,
-                "IP": device.ip,
-                "Hostname": device.hostname or "",
-                "MAC": device.mac or "",
-                "Vendor": device.vendor or "",
-                "Device type": device.device_type,
-                "Trust status": device.trust_status,
-            }
-        )
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-
-    if result.vanished:
-        with st.expander("Vanished since the previous scan"):
-            st.dataframe(
-                [
-                    {
-                        "Friendly name": device.friendly_name,
-                        "State": device.state,
-                        "IP": device.ip,
-                        "Hostname": device.hostname or "",
-                        "MAC": device.mac or "",
-                        "Vendor": device.vendor or "",
-                        "Device type": device.device_type,
-                        "Trust status": device.trust_status,
-                    }
-                    for device in result.vanished
-                ],
-                use_container_width=True,
-                hide_index=True,
-            )
-
 
 else:
+    with header_area.container():
+        render_overview(mode, network, None, status=scan_status)
     if mode == "Demo Séance":
-        st.info(
-            "Select Start Demo for the baseline, then Next Scan to advance the simulated story."
-        )
+        st.info("No scan yet. Start Demo for the baseline, then use Next Scan to reveal changes.")
     else:
         st.info(
-            "Run a scan to refresh network presence. Saved observations are available in scan history below."
+            "No scan this session. Scan for apparitions to refresh presence, or inspect saved history below."
         )
 
-
 render_history(store, network, key_prefix=view_key)
-
 render_ai(store, network, model, key_prefix=view_key)
+render_footer()

@@ -263,6 +263,8 @@ def install_ui_ollama(monkeypatch):
         ],
     }
 
+    state["report"] = report
+
     def handler(request):
         state["requests"].append(request)
         failure = state["failure"]
@@ -356,3 +358,74 @@ def test_ai_failure_clears_old_report_and_keeps_scanning_and_history(
     assert not ui.exception
     assert len(store.recent_scans(NETWORK)) == 2
     assert any(widget.label == "Inspect scan" for widget in ui.selectbox)
+
+
+def test_network_detection_failure_is_actionable_and_demo_still_opens(app, monkeypatch):
+    ui, store = app
+
+    def fail():
+        raise RuntimeError("internal adapter detail")
+
+    monkeypatch.setattr(network, "detect_local_network", fail)
+    monkeypatch.setattr("specterlan.demo.SnapshotStore", type(store))
+    ui.run()
+    assert not ui.exception
+    assert any("Connect to a private Wi-Fi or Ethernet" in item.value for item in ui.error)
+    assert not any("internal adapter detail" in item.value for item in ui.error)
+    ui.radio[0].set_value("Demo Séance").run()
+    assert not ui.exception
+    assert any(button.label == "Start Demo" for button in ui.button)
+    ui.session_state["demo_session"].close()
+
+
+def test_missing_nmap_notice_does_not_block_fallback_scan(app, monkeypatch):
+    ui, store = app
+    monkeypatch.setattr("shutil.which", lambda *args, **kwargs: None)
+    ui.run()
+    assert any("Nmap unavailable" in item.value for item in ui.info)
+    assert any("ping + the local neighbor table" in item.value for item in ui.info)
+    ui.button[0].click().run()
+    assert not ui.exception
+    assert len(store.recent_scans(NETWORK)) == 2
+
+
+def test_scan_failure_keeps_previous_snapshot_and_hides_internal_error(app, monkeypatch):
+    ui, store = app
+
+    def fail(*_):
+        raise OSError("internal scanner detail")
+
+    monkeypatch.setattr(network, "discover", fail)
+    ui.button[0].click().run()
+    assert not ui.exception
+    assert any("Scan failed. Check your network" in item.value for item in ui.error)
+    assert not any("internal scanner detail" in item.value for item in ui.error)
+    assert any("previous observations retained" in item.value for item in ui.markdown)
+    assert len(store.recent_scans(NETWORK)) == 1
+    assert len(ui.dataframe[0].value) == 2
+
+
+def test_storage_startup_failure_is_handled_without_raw_details(app, monkeypatch):
+    ui, _ = app
+
+    def fail():
+        raise sqlite3.OperationalError("internal database path")
+
+    monkeypatch.setattr(store_module, "SnapshotStore", fail)
+    ui.run()
+    assert not ui.exception
+    assert any("Could not open local scan history" in item.value for item in ui.error)
+    assert not any("internal database path" in item.value for item in ui.error)
+
+
+def test_empty_ai_sections_are_explicit_without_claiming_network_safety(app, monkeypatch):
+    ui, _ = app
+    state = install_ui_ollama(monkeypatch)
+    state["report"]["notable_changes"] = []
+    state["report"]["devices_to_verify"] = []
+    state["report"]["suggested_checks"] = []
+    analyze_button(ui).click().run()
+    assert not ui.exception
+    assert any("No devices needing verification in this report." in item.value for item in ui.info)
+    assert any("No notable changes in this report." in item.value for item in ui.caption)
+    assert any("No additional checks suggested." in item.value for item in ui.caption)

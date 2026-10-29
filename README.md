@@ -277,6 +277,54 @@ be running for Ask the Ghost; failures remain isolated from the demo and history
 Tests mock AI requests and do not require a running model. Demo does not download
 models or create any cloud AI calls.
 
+## Demo-ready interface
+
+Run `streamlit run app.py` from the repository root so Streamlit loads
+`.streamlit/config.toml`. The default theme uses charcoal backgrounds, restrained
+amber accents, and the native sans-serif font. The small stylesheet only adjusts
+spacing, typography, and metric density; there are no animations or remote assets.
+
+The page starts with mode, private subnet, scan status, and the Online, New,
+Unreviewed, and Vanished counts. Trusted, known, ignored, and unidentified counts
+appear beneath. Before a scan, counts show a dash rather than implying zero
+devices. The inventory prioritizes names, presence, IP, type, and trust. Hostname,
+MAC, and vendor remain available by horizontal scrolling or the table's fullscreen
+control. Color reinforces the text labels; it is not the only state indicator.
+
+Editing, historical detail, and raw AI evidence stay collapsed until needed.
+Change cards show only nonempty event groups. Ask the Ghost identifies the local
+model and no-cloud policy, separates its overview from supporting sections, and
+has explicit empty states. No devices needing verification in a report is not a
+claim that the network is safe.
+
+For a short judging recording at a common laptop width (1280 or 1366 pixels):
+
+1. Select **Demo Séance** and keep its simulated-evidence banner visible.
+2. Start Demo; point out the known/trusted baseline and automatic device types.
+3. Advance once; highlight the new/unreviewed ESP entry and its change card.
+4. Advance again; show the vanished phone and the TV's same-identity IP move.
+5. Expand recent scans to show the three snapshots. If Ollama is ready, ask the
+   Ghost and open a cited fact in its report.
+6. Open **How SpecterLAN works** for the local pipeline, then Reset Demo to replay.
+
+These screenshots contain only deterministic simulated data:
+
+![Demo inventory with presence and trust labels](docs/screenshots/demo-inventory.jpg)
+
+![Demo change cards and local Ollama section](docs/screenshots/demo-changes.jpg)
+
+Nmap being unavailable is informational: the existing ping/neighbor fallback
+remains usable. Network-detection errors suggest reconnecting or selecting Demo
+Seance. Ollama errors explain how to start the service or choose an installed
+model. Expected failures show concise actions, while diagnostic tracebacks remain
+in the local server log. Streamlit is configured to hide unexpected exception
+details in the browser.
+
+Visual checks used the installed Streamlit 1.66 browser UI at 1280 and 1366 pixels.
+Secondary table columns intentionally scroll at smaller widths. Earlier Streamlit
+versions or future frontend changes can render spacing differently. Model output
+quality remains governed by the existing local-analysis limitations.
+
 ## Why open innovation matters
 
 Network inventory data is sensitive. A home-network map can reveal device names,

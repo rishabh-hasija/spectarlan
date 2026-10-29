@@ -8,6 +8,7 @@ import streamlit as st
 from .changes import compare_scans
 from .models import SavedScan
 from .store import SnapshotStore
+from .ui import render_device_table, show_ui_error
 
 CHANGE_LABELS = (
     ("new", "NEW"),
@@ -32,6 +33,11 @@ def _show_changes(current: SavedScan, previous: SavedScan | None, key_prefix: st
         st.info("No meaningful changes since the previous scan.")
         return
     counts = Counter(change.kind for change in changes)
+    st.caption(
+        " · ".join(
+            f"{label.lower()}: {counts[kind]}" for kind, label in CHANGE_LABELS if counts[kind]
+        )
+    )
     show_all = False
     if any(count > 5 for count in counts.values()):
         show_all = st.checkbox(
@@ -49,7 +55,8 @@ def _show_changes(current: SavedScan, previous: SavedScan | None, key_prefix: st
         for change in visible:
             device = change.device
             name = device.friendly_name or device.hostname or device.mac or device.ip
-            st.text(f"{name}\n" + "\n".join(change.details))
+            with st.container(border=True):
+                st.text(f"{name}\n" + "\n".join(change.details))
         if len(group) > 5 and not show_all:
             st.caption(f"Showing 5 of {len(group)}. Select Show all changes to see the rest.")
 
@@ -74,8 +81,8 @@ def render_history(store: SnapshotStore, network: str, key_prefix: str = "live")
     try:
         scans = store.recent_scans(network)
         previous = store.previous_scan(scans[0]) if scans else None
-    except (sqlite3.Error, ValueError) as exc:
-        st.error(f"Could not load scan history: {exc}")
+    except (sqlite3.Error, ValueError):
+        show_ui_error("Scan history could not load. Check local database access, then refresh.")
         return
     if not scans:
         st.info(f"No saved scans for {network}. Run a scan to establish a baseline.")
@@ -105,30 +112,16 @@ def render_history(store: SnapshotStore, network: str, key_prefix: str = "live")
             "Older scans may lack metadata or automatic classification details."
         )
         if selected.devices:
-            st.dataframe(
-                [
-                    {
-                        "Friendly name": device.friendly_name,
-                        "State": device.state,
-                        "IP": device.ip,
-                        "Hostname": device.hostname or "",
-                        "MAC": device.mac or "",
-                        "Vendor": device.vendor or "",
-                        "Device type": device.device_type,
-                        "Trust status": device.trust_status,
-                    }
-                    for device in selected.devices
-                ],
-                hide_index=True,
-                use_container_width=True,
-            )
+            render_device_table(selected.devices)
         else:
             st.info("This scan recorded no online devices.")
         if selected.id != scans[0].id:
             st.markdown("**Changes for selected scan**")
             try:
                 selected_previous = store.previous_scan(selected)
-            except (sqlite3.Error, ValueError) as exc:
-                st.error(f"Could not load the preceding scan: {exc}")
+            except (sqlite3.Error, ValueError):
+                show_ui_error(
+                    "The preceding scan could not load. Refresh or inspect another saved scan."
+                )
                 return
             _show_changes(selected, selected_previous, key_prefix)
