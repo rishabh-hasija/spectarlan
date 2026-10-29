@@ -9,6 +9,7 @@ from typing import get_args
 import streamlit as st
 
 from specterlan.ai_ui import render_ai
+from specterlan.demo import DEMO_LOCAL_IP, DEMO_NETWORK, DEMO_STAGES, DemoSession
 from specterlan.history_ui import render_history
 from specterlan.models import DeviceMetadata, DeviceType, ScanResult, TrustStatus
 from specterlan.network import detect_local_network, discover
@@ -23,23 +24,37 @@ st.set_page_config(
 st.title("👻 SpecterLAN")
 st.caption("Find the ghosts on your network. Local discovery + local AI.")
 
-store = SnapshotStore()
-
 if "scan_result" not in st.session_state:
     st.session_state.scan_result = None
 if "ai_report" not in st.session_state:
     st.session_state.ai_report = None
 
-try:
-    local_ip, network = detect_local_network()
-except (OSError, RuntimeError, ValueError) as exc:
-    st.error(f"Network detection failed: {exc}")
-    st.stop()
+mode = st.sidebar.radio("Mode", ["Live Network", "Demo Séance"], key="mode")
+previous_mode = st.session_state.get("active_mode", mode)
+if previous_mode != mode:
+    st.session_state[f"result:{previous_mode}"] = st.session_state.scan_result
+    st.session_state.scan_result = st.session_state.get(f"result:{mode}")
+    st.session_state.ai_report = None
+st.session_state.active_mode = mode
 
-if (
-    st.session_state.scan_result is not None
-    and st.session_state.scan_result.network != network
-):
+if mode == "Demo Séance":
+    st.info("Demo Séance: simulated network evidence")
+    if "demo_session" not in st.session_state:
+        st.session_state.demo_session = DemoSession()
+    demo = st.session_state.demo_session
+    store = demo.store
+    local_ip, network = DEMO_LOCAL_IP, DEMO_NETWORK
+    view_key = f"demo:{demo.generation}"
+else:
+    store = SnapshotStore()
+    view_key = "live"
+    try:
+        local_ip, network = detect_local_network()
+    except (OSError, RuntimeError, ValueError) as exc:
+        st.error(f"Network detection failed: {exc}")
+        st.stop()
+
+if st.session_state.scan_result is not None and st.session_state.scan_result.network != network:
     st.session_state.scan_result = None
     st.session_state.ai_report = None
 
@@ -48,33 +63,66 @@ with st.sidebar:
     st.text_input("Local IP", value=local_ip, disabled=True)
     st.text_input("Target subnet", value=network, disabled=True)
     model = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "gemma3:4b"))
-    st.caption("SpecterLAN scans only the private subnet containing this computer.")
-    st.caption("MVP discovery does not perform a port scan.")
+    if mode == "Live Network":
+        st.caption("SpecterLAN scans only the private subnet containing this computer.")
+        st.caption("MVP discovery does not perform a port scan.")
+    else:
+        st.caption("Fixed simulated subnet. No network detection or discovery is performed.")
 
-if st.button("Scan for apparitions", type="primary", use_container_width=True):
-    with st.spinner("Listening for devices on the local network..."):
+if mode == "Live Network":
+    if st.button("Scan for apparitions", type="primary", use_container_width=True):
+        with st.spinner("Listening for devices on the local network..."):
+            try:
+                devices, scanner = discover(network, local_ip)
+                devices, vanished = store.annotate_states(devices, network)
+                result = ScanResult(
+                    network=network,
+                    local_ip=local_ip,
+                    devices=devices,
+                    vanished=vanished,
+                    scanner=scanner,
+                )
+                store.save(result)
+                st.session_state.scan_result = result
+                st.session_state.ai_report = None
+            except (
+                OSError,
+                RuntimeError,
+                ValueError,
+                subprocess.SubprocessError,
+                ET.ParseError,
+                sqlite3.Error,
+            ) as exc:
+                st.error(str(exc))
+
+else:
+    controls = st.columns(3)
+    start_demo = controls[0].button(
+        "Start Demo", type="primary", disabled=demo.stage != 0, key=f"start:{view_key}"
+    )
+    next_scan = controls[1].button(
+        "Next Scan", disabled=demo.stage == 0 or demo.stage >= DEMO_STAGES, key=f"next:{view_key}"
+    )
+    reset_demo = controls[2].button("Reset Demo", key=f"reset:{view_key}")
+    if reset_demo:
         try:
-            devices, scanner = discover(network, local_ip)
-            devices, vanished = store.annotate_states(devices, network)
-            result = ScanResult(
-                network=network,
-                local_ip=local_ip,
-                devices=devices,
-                vanished=vanished,
-                scanner=scanner,
-            )
-            store.save(result)
-            st.session_state.scan_result = result
+            demo.reset()
+        except sqlite3.Error as exc:
+            st.error(f"Could not reset demo data: {exc}")
+        else:
+            st.session_state.scan_result = None
+            st.session_state["result:Demo Séance"] = None
             st.session_state.ai_report = None
-        except (
-            OSError,
-            RuntimeError,
-            ValueError,
-            subprocess.SubprocessError,
-            ET.ParseError,
-            sqlite3.Error,
-        ) as exc:
-            st.error(str(exc))
+            st.rerun()
+    if start_demo or next_scan:
+        try:
+            st.session_state.scan_result = demo.advance()
+        except (sqlite3.Error, ValueError) as exc:
+            st.error(f"Could not advance the demo: {exc}")
+        else:
+            st.session_state.ai_report = None
+            st.rerun()
+    st.caption(f"Demo scan {demo.stage} of {DEMO_STAGES}. Reset Demo replays the same story.")
 
 result: ScanResult | None = st.session_state.scan_result
 
@@ -95,6 +143,7 @@ if result:
             identity = st.selectbox(
                 "Device",
                 options=list(editable),
+                key=None if mode == "Live Network" else f"device_selector:{view_key}",
                 format_func=lambda key: (
                     f"{editable[key].friendly_name or editable[key].hostname or editable[key].ip}"
                     f" | {editable[key].ip} | {editable[key].mac or 'no MAC'}"
@@ -117,7 +166,9 @@ if result:
                     "Another device could reuse the address. Verify identity before trusting; "
                     "metadata will not follow an IP change or transfer to a MAC identity."
                 )
-            with st.form(f"edit:{identity}"):
+            with st.form(
+                f"edit:{identity}" if mode == "Live Network" else f"edit:{view_key}:{identity}"
+            ):
                 friendly_name = st.text_input("Friendly name", value=selected.friendly_name)
                 device_types = get_args(DeviceType)
                 device_type = st.selectbox(
@@ -196,9 +247,16 @@ if result:
 
 
 else:
-    st.info("Run a scan to refresh network presence. Saved observations are available in scan history below.")
+    if mode == "Demo Séance":
+        st.info(
+            "Select Start Demo for the baseline, then Next Scan to advance the simulated story."
+        )
+    else:
+        st.info(
+            "Run a scan to refresh network presence. Saved observations are available in scan history below."
+        )
 
 
-render_history(store, network)
+render_history(store, network, key_prefix=view_key)
 
-render_ai(store, network, model)
+render_ai(store, network, model, key_prefix=view_key)

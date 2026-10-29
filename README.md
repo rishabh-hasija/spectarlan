@@ -224,6 +224,59 @@ Large subnets or limited hardware may still require a different installed local
 model, more context, or more time. Tests mock Ollama and do not require a running
 model; live model quality and performance are not established by those tests.
 
+## Deterministic Demo Seance
+
+Choose **Demo Seance** (shown as **Demo Séance** in the UI) in the sidebar.
+The banner **Demo Séance: simulated network evidence** remains visible.
+Demo mode skips local interface detection and all network discovery; it can be
+used without an active LAN. **Live Network** remains the default mode, with the
+existing discovery commands and scan processing behavior.
+
+Use these controls for a short judging walkthrough:
+
+1. **Start Demo** saves scan 1: Home Router, Work Laptop, Living Room TV,
+   and Alice's Phone. The curated baseline inventory is already known/trusted.
+   Inspect their automatic types and open scan history to show the baseline.
+2. **Next Scan** saves scan 2: the same devices plus `ESP_32A1` at
+   `192.168.178.47`, vendor Espressif, with unreviewed trust and a
+   `smart_home` effective device type. The change view shows one new apparition.
+3. **Next Scan** saves scan 3: the TV retains its MAC while moving from
+   `192.168.178.20` to `192.168.178.31`; Alice's Phone vanishes; the ESP remains
+   present. The TV is an IP change, not a new device.
+4. Use **Ask the Ghost** at any stage to explain the saved simulated evidence
+   with your installed local Ollama model. This uses the same evidence builder,
+   validation, and local-only client as live mode.
+5. **Reset Demo** clears only the session's simulated history and edits, then
+   returns to the initial controls. Start Demo replays identical observations,
+   timestamps, metadata defaults, and scan IDs. Progress stops after scan 3.
+
+The ESP scenario deliberately uses the normal saved `smart_home` type override.
+Its automatic type stays `unknown`: ESP/Espressif alone is weak evidence under
+the live classification rules. The demo does not pretend that this is a strong
+automatic classification or mark the unreviewed device as trusted. Baseline
+router, computer, TV, and phone types use the existing automatic rules.
+
+Fixtures live in `specterlan/demo.py` and construct fresh observations with fixed
+locally administered MAC addresses, IPs, and timestamps (October 29, 2026,
+20:00-20:02 UTC). Every stage passes through the existing metadata, classification,
+SQLite storage, history, comparison, and AI evidence paths. There is no parallel
+demo change detector or AI implementation.
+
+Each Streamlit session owns a separate temporary SQLite database. Demo never opens
+the live `.specterlan.db`, even if the real subnet or device MACs match fixtures.
+Mode-specific widget state and clearing AI reports prevent accidental mixing.
+Returning to Live Network restores that mode's session result; no demo rows or
+metadata enter live history. SQLite connections close after transactions for
+reliable Windows temporary-file cleanup. No schema migration is added.
+
+Demo data is session-scoped rather than durable across application restarts.
+Edits made during a demo are real edits to its isolated metadata, so Reset Demo
+restores the prescribed story. Only fixture scans are deterministic: Ollama's
+wording and response time depend on the installed model and hardware. Ollama must
+be running for Ask the Ghost; failures remain isolated from the demo and history.
+Tests mock AI requests and do not require a running model. Demo does not download
+models or create any cloud AI calls.
+
 ## Why open innovation matters
 
 Network inventory data is sensitive. A home-network map can reveal device names,

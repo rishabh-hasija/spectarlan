@@ -4,6 +4,8 @@ import ipaddress
 import json
 import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from itertools import pairwise
 from pathlib import Path
 
@@ -25,10 +27,15 @@ class SnapshotStore:
         self.path = str(path)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         con = sqlite3.connect(self.path)
         con.row_factory = sqlite3.Row
-        return con
+        try:
+            with con:
+                yield con
+        finally:
+            con.close()
 
     def _init_db(self) -> None:
         with self._connect() as con:

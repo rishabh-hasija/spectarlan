@@ -19,7 +19,7 @@ CHANGE_LABELS = (
 )
 
 
-def _show_changes(current: SavedScan, previous: SavedScan | None) -> None:
+def _show_changes(current: SavedScan, previous: SavedScan | None, key_prefix: str) -> None:
     if previous is None:
         st.info("First scan of this subnet: baseline saved; no previous scan to compare.")
         return
@@ -34,7 +34,12 @@ def _show_changes(current: SavedScan, previous: SavedScan | None) -> None:
     counts = Counter(change.kind for change in changes)
     show_all = False
     if any(count > 5 for count in counts.values()):
-        show_all = st.checkbox("Show all changes", key=f"changes_all:{current.id}")
+        show_all = st.checkbox(
+            "Show all changes",
+            key=f"changes_all:{current.id}"
+            if key_prefix == "live"
+            else f"changes_all:{key_prefix}:{current.id}",
+        )
     for kind, label in CHANGE_LABELS:
         group = [change for change in changes if change.kind == kind]
         if not group:
@@ -63,7 +68,7 @@ def _summary(scan: SavedScan) -> dict[str, object]:
     }
 
 
-def render_history(store: SnapshotStore, network: str) -> None:
+def render_history(store: SnapshotStore, network: str, key_prefix: str = "live") -> None:
     """Show saved observations separately from the editable, live metadata view."""
     st.subheader("What changed since the last scan?")
     try:
@@ -80,7 +85,7 @@ def render_history(store: SnapshotStore, network: str) -> None:
         f"Current subnet: {network}. Changes use saved snapshots. "
         "Metadata edits appear here after the next scan captures them."
     )
-    _show_changes(scans[0], previous)
+    _show_changes(scans[0], previous, key_prefix)
 
     with st.expander("Recent scans (latest 10)"):
         st.dataframe([_summary(scan) for scan in scans], hide_index=True, use_container_width=True)
@@ -88,6 +93,7 @@ def render_history(store: SnapshotStore, network: str) -> None:
         selected_id = st.selectbox(
             "Inspect scan",
             options=list(by_id),
+            key=None if key_prefix == "live" else f"history_selection:{key_prefix}",
             format_func=lambda scan_id: (
                 f"#{scan_id} | {by_id[scan_id].scanned_at.isoformat(timespec='seconds')}"
             ),
@@ -125,4 +131,4 @@ def render_history(store: SnapshotStore, network: str) -> None:
             except (sqlite3.Error, ValueError) as exc:
                 st.error(f"Could not load the preceding scan: {exc}")
                 return
-            _show_changes(selected, selected_previous)
+            _show_changes(selected, selected_previous, key_prefix)

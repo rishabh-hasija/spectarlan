@@ -8,7 +8,7 @@ from .ai import AIAnalysisError, Analysis, analyze_latest
 from .store import SnapshotStore
 
 
-def render_ai(store: SnapshotStore, network: str, model: str) -> None:
+def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = "live") -> None:
     st.subheader("Ask the Ghost")
     st.caption(
         f"Local Ollama inference on this computer; no cloud AI. Selected model: {model}. "
@@ -32,7 +32,11 @@ def render_ai(store: SnapshotStore, network: str, model: str) -> None:
     ):
         st.session_state.ai_report = None
 
-    if st.button("Analyze with Ollama", use_container_width=True):
+    if st.button(
+        "Analyze with Ollama",
+        use_container_width=True,
+        key=None if key_prefix == "live" else f"analyze:{key_prefix}",
+    ):
         st.session_state.ai_report = None
         with st.spinner(f"Asking local {model} to explain the saved evidence..."):
             try:
