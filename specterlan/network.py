@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import ipaddress
+import logging
 import platform
 import re
 import shutil
@@ -11,10 +12,11 @@ import xml.etree.ElementTree as ET
 
 import psutil
 
-from .models import Device
-
+from .classification import classify, classify_observation
+from .models import Device, DeviceType
 
 MAX_SCAN_HOSTS = 256
+logger = logging.getLogger(__name__)
 
 
 def _private_ipv4_candidates() -> list[tuple[str, str]]:
@@ -51,7 +53,7 @@ def detect_local_network() -> tuple[str, str]:
         prefix = ipaddress.ip_network(f"{ip_s}/{mask}", strict=False).prefixlen
         return preferred, prefix
 
-    local_ip, netmask = sorted(candidates, key=score, reverse=True)[0]
+    local_ip, netmask = max(candidates, key=score)
     discovered = ipaddress.ip_network(f"{local_ip}/{netmask}", strict=False)
 
     # Keep scans small and local. A broad corporate/VPN range is capped to the
@@ -77,21 +79,9 @@ def validate_scan_scope(network: str, local_ip: str) -> None:
         raise ValueError(f"Scan is limited to {MAX_SCAN_HOSTS} addresses.")
 
 
-def classify_device(hostname: str | None, vendor: str | None) -> str:
-    text = f"{hostname or ''} {vendor or ''}".lower()
-
-    groups = [
-        ("router", ("router", "gateway", "fritz", "ubiquiti", "netgear", "tp-link", "asus")),
-        ("printer", ("printer", "epson", "brother", "canon", "xerox", "laserjet")),
-        ("tv", ("tv", "roku", "chromecast", "hisense", "samsung electronics", "lg electronics")),
-        ("phone", ("iphone", "android", "pixel", "oneplus", "xiaomi", "oppo")),
-        ("computer", ("desktop", "laptop", "macbook", "windows", "raspberry", "intel")),
-        ("iot", ("esp", "tuya", "sonos", "amazon technologies", "google home", "nest")),
-    ]
-    for category, markers in groups:
-        if any(marker in text for marker in markers):
-            return category
-    return "unknown"
+def classify_device(hostname: str | None, vendor: str | None) -> DeviceType:
+    """Compatibility wrapper for callers that only need the automatic type."""
+    return classify(hostname, vendor).device_type
 
 
 def _scan_with_nmap(network: str) -> list[Device]:
@@ -135,12 +125,13 @@ def _scan_with_nmap(network: str) -> list[Device]:
                 hostname = first.attrib.get("name")
 
         devices.append(
-            Device(
-                ip=ipv4,
-                hostname=hostname,
-                mac=mac,
-                vendor=vendor,
-                device_type=classify_device(hostname, vendor),
+            classify_observation(
+                Device(
+                    ip=ipv4,
+                    hostname=hostname,
+                    mac=mac,
+                    vendor=vendor,
+                )
             )
         )
     return devices
@@ -199,8 +190,8 @@ def _scan_with_ping(network: str) -> list[Device]:
             try:
                 if future.result():
                     live.append(ip)
-            except Exception:
-                pass
+            except (OSError, subprocess.SubprocessError, UnicodeError):
+                logger.warning("Ping probe failed for %s", ip, exc_info=True)
 
     arp = _arp_table()
     devices: list[Device] = []
@@ -211,12 +202,13 @@ def _scan_with_ping(network: str) -> list[Device]:
         except OSError:
             pass
         devices.append(
-            Device(
-                ip=ip,
-                hostname=hostname,
-                mac=arp.get(ip),
-                vendor=None,
-                device_type=classify_device(hostname, None),
+            classify_observation(
+                Device(
+                    ip=ip,
+                    hostname=hostname,
+                    mac=arp.get(ip),
+                    vendor=None,
+                )
             )
         )
     return devices

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+import subprocess
+import xml.etree.ElementTree as ET
+from typing import get_args
 
+import httpx
 import streamlit as st
 
 from specterlan.ai import analyze_scan
-from specterlan.models import ScanResult
+from specterlan.history_ui import render_history
+from specterlan.models import DeviceMetadata, DeviceType, ScanResult, TrustStatus
 from specterlan.network import detect_local_network, discover
-from specterlan.store import SnapshotStore
-
+from specterlan.store import SnapshotStore, device_identity
 
 st.set_page_config(
     page_title="SpecterLAN",
@@ -28,9 +33,16 @@ if "ai_report" not in st.session_state:
 
 try:
     local_ip, network = detect_local_network()
-except Exception as exc:
+except (OSError, RuntimeError, ValueError) as exc:
     st.error(f"Network detection failed: {exc}")
     st.stop()
+
+if (
+    st.session_state.scan_result is not None
+    and st.session_state.scan_result.network != network
+):
+    st.session_state.scan_result = None
+    st.session_state.ai_report = None
 
 with st.sidebar:
     st.subheader("Scan boundary")
@@ -44,7 +56,7 @@ if st.button("Scan for apparitions", type="primary", use_container_width=True):
     with st.spinner("Listening for devices on the local network..."):
         try:
             devices, scanner = discover(network, local_ip)
-            devices, vanished = store.annotate_states(devices)
+            devices, vanished = store.annotate_states(devices, network)
             result = ScanResult(
                 network=network,
                 local_ip=local_ip,
@@ -55,12 +67,88 @@ if st.button("Scan for apparitions", type="primary", use_container_width=True):
             store.save(result)
             st.session_state.scan_result = result
             st.session_state.ai_report = None
-        except Exception as exc:
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            subprocess.SubprocessError,
+            ET.ParseError,
+            sqlite3.Error,
+        ) as exc:
             st.error(str(exc))
 
 result: ScanResult | None = st.session_state.scan_result
 
 if result:
+    try:
+        result.devices = store.apply_metadata(result.devices, result.network)
+        result.vanished = store.apply_metadata(result.vanished, result.network)
+    except (sqlite3.Error, ValueError) as exc:
+        st.error(f"Could not load device metadata: {exc}")
+        st.stop()
+
+    editable = {
+        device_identity(device, result.network): device
+        for device in [*result.devices, *result.vanished]
+    }
+    if editable:
+        with st.expander("Edit a device"):
+            identity = st.selectbox(
+                "Device",
+                options=list(editable),
+                format_func=lambda key: (
+                    f"{editable[key].friendly_name or editable[key].hostname or editable[key].ip}"
+                    f" | {editable[key].ip} | {editable[key].mac or 'no MAC'}"
+                    f" | {editable[key].state}"
+                ),
+            )
+            selected = editable[identity]
+            st.caption(
+                f"Automatic suggestion: {selected.automatic_device_type}. "
+                f"{selected.classification_reason} "
+                "A saved device type takes precedence over this suggestion."
+            )
+            st.caption(
+                "Trust is your inventory label; it does not allow or block network access. "
+                "Ignored devices remain visible and are still scanned."
+            )
+            if identity.startswith("ip:"):
+                st.warning(
+                    "No usable MAC is visible. Metadata applies only to this subnet and IP. "
+                    "Another device could reuse the address. Verify identity before trusting; "
+                    "metadata will not follow an IP change or transfer to a MAC identity."
+                )
+            with st.form(f"edit:{identity}"):
+                friendly_name = st.text_input("Friendly name", value=selected.friendly_name)
+                device_types = get_args(DeviceType)
+                device_type = st.selectbox(
+                    "Device type",
+                    options=device_types,
+                    index=device_types.index(selected.device_type),
+                )
+                trust_statuses = get_args(TrustStatus)
+                trust_status = st.selectbox(
+                    "Trust status",
+                    options=trust_statuses,
+                    index=trust_statuses.index(selected.trust_status),
+                )
+                if st.form_submit_button("Save device"):
+                    try:
+                        store.update_metadata(
+                            selected,
+                            result.network,
+                            DeviceMetadata(
+                                friendly_name=friendly_name,
+                                device_type=device_type,
+                                trust_status=trust_status,
+                            ),
+                        )
+                    except (sqlite3.Error, ValueError) as exc:
+                        st.error(f"Could not save device metadata: {exc}")
+                    else:
+                        st.session_state.ai_report = None
+                        st.rerun()
+
     new_count = sum(device.state == "new" for device in result.devices)
     unknown_count = sum(device.device_type == "unknown" for device in result.devices)
 
@@ -75,12 +163,14 @@ if result:
     for device in result.devices:
         rows.append(
             {
+                "Friendly name": device.friendly_name,
                 "State": device.state,
                 "IP": device.ip,
                 "Hostname": device.hostname or "",
                 "MAC": device.mac or "",
                 "Vendor": device.vendor or "",
-                "Type": device.device_type,
+                "Device type": device.device_type,
+                "Trust status": device.trust_status,
             }
         )
     st.dataframe(rows, use_container_width=True, hide_index=True)
@@ -90,10 +180,14 @@ if result:
             st.dataframe(
                 [
                     {
+                        "Friendly name": device.friendly_name,
+                        "State": device.state,
                         "IP": device.ip,
                         "Hostname": device.hostname or "",
                         "MAC": device.mac or "",
-                        "Type": device.device_type,
+                        "Vendor": device.vendor or "",
+                        "Device type": device.device_type,
+                        "Trust status": device.trust_status,
                     }
                     for device in result.vanished
                 ],
@@ -108,7 +202,7 @@ if result:
         with st.spinner(f"Asking {model} to interpret the scan evidence..."):
             try:
                 st.session_state.ai_report = analyze_scan(result, model=model)
-            except Exception as exc:
+            except (RuntimeError, ValueError, KeyError, TypeError, httpx.InvalidURL) as exc:
                 st.error(str(exc))
 
     report = st.session_state.ai_report
@@ -134,4 +228,7 @@ if result:
                 for line in report.evidence_summary:
                     st.write(f"• {line}")
 else:
-    st.info("Run the first scan. The next scan will let SpecterLAN distinguish new, known, and vanished devices.")
+    st.info("Run a scan to refresh network presence. Saved observations are available in scan history below.")
+
+
+render_history(store, network)

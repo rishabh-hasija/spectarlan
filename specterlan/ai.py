@@ -7,7 +7,6 @@ import httpx
 
 from .models import AIReport, ScanResult
 
-
 SYSTEM_PROMPT = """
 You are SpecterLAN, a local network presence analyst.
 
