@@ -23,6 +23,14 @@ from specterlan.ui import (
     show_ui_error,
 )
 
+
+def save_model_preference(store: SnapshotStore) -> None:
+    try:
+        store.save_model_preference(st.session_state.local_model_preference)
+    except (OSError, sqlite3.Error):
+        st.error("Could not save the local model preference. Check local history access.")
+
+
 st.set_page_config(
     page_title="SpecterLAN",
     page_icon="👻",
@@ -59,11 +67,14 @@ if mode == "Demo Séance":
     store = demo.store
     local_ip, network = DEMO_LOCAL_IP, DEMO_NETWORK
     view_key = f"demo:{demo.generation}"
+    initial_model = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
 else:
     try:
         store = SnapshotStore()
+        initial_model = os.getenv("OLLAMA_MODEL", store.model_preference() or "gemma4:e4b")
     except (OSError, sqlite3.Error, RuntimeError, ValueError):
-        show_ui_error(
+        # Filesystem exceptions can contain account names in absolute paths.
+        st.error(
             "Could not open local scan history. Check database permissions and app compatibility."
         )
         render_footer()
@@ -87,7 +98,17 @@ with st.sidebar:
     st.subheader("Scan boundary")
     st.text_input("Local IP", value=local_ip, disabled=True)
     st.text_input("Target subnet", value=network, disabled=True)
-    model = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "gemma3:4b"))
+    if mode == "Live Network":
+        model = st.text_input(
+            "Ollama model",
+            value=initial_model,
+            key="local_model_preference",
+            on_change=save_model_preference,
+            args=(store,),
+        )
+    else:
+        model = st.text_input("Ollama model", value=initial_model)
+    st.caption("Your SpecterLAN data is stored locally on this device.")
     if mode == "Live Network":
         st.caption("SpecterLAN scans only the private subnet containing this computer.")
         st.caption("MVP discovery does not perform a port scan.")

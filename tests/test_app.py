@@ -418,6 +418,45 @@ def test_storage_startup_failure_is_handled_without_raw_details(app, monkeypatch
     assert not any("internal database path" in item.value for item in ui.error)
 
 
+def test_local_model_preference_survives_restart_and_env_override(app, monkeypatch):
+    ui, store = app
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    next(widget for widget in ui.text_input if widget.label == "Ollama model").set_value(
+        "qwen3.5:4b"
+    ).run()
+    assert not ui.exception
+    assert store.model_preference() == "qwen3.5:4b"
+    app_path = str(Path(__file__).resolve().parents[1] / "app.py")
+    restarted = AppTest.from_file(app_path, default_timeout=15).run()
+    assert not restarted.exception
+    assert next(w for w in restarted.text_input if w.label == "Ollama model").value == "qwen3.5:4b"
+    assert any(
+        item.value == "Your SpecterLAN data is stored locally on this device."
+        for item in restarted.caption
+    )
+    assert not any(store.path in item.value for item in restarted.caption)
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3.2:3b")
+    configured = AppTest.from_file(app_path, default_timeout=15).run()
+    assert not configured.exception
+    assert (
+        next(w for w in configured.text_input if w.label == "Ollama model").value == "llama3.2:3b"
+    )
+    assert store.model_preference() == "qwen3.5:4b"
+
+
+def test_preference_write_error_hides_filesystem_details(app, monkeypatch):
+    ui, store = app
+
+    def denied(model):
+        raise sqlite3.OperationalError("private Windows account path")
+
+    monkeypatch.setattr(store, "save_model_preference", denied)
+    next(w for w in ui.text_input if w.label == "Ollama model").set_value("other-local-model").run()
+    assert not ui.exception
+    assert any("Could not save the local model preference" in item.value for item in ui.error)
+    assert not any("private Windows account path" in item.value for item in ui.error)
+
+
 def test_empty_ai_sections_are_explicit_without_claiming_network_safety(app, monkeypatch):
     ui, _ = app
     state = install_ui_ollama(monkeypatch)

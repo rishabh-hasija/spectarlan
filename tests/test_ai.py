@@ -222,11 +222,11 @@ def test_invalid_comparison_pair_is_rejected(previous):
 def test_structured_new_device_result_is_grounded_and_default_model_is_local(ollama):
     calls, settings = ollama()
     result = ai.analyze_scan(snapshot())
-    assert result.model == "gemma3:4b"
+    assert result.model == "gemma4:e4b"
     assert result.report.notable_changes[0].confidence == "high"
     assert "newly observed" in result.report.notable_changes[0].explanation
     assert len(calls) == 2
-    assert json.loads(calls[0].content) == {"model": "gemma3:4b"}
+    assert json.loads(calls[0].content) == {"model": "gemma4:e4b"}
     payload = json.loads(calls[1].content)
     assert payload["stream"] is False
     assert payload["options"]["temperature"] == 0
@@ -299,7 +299,7 @@ def test_no_saved_scan_has_actionable_error(tmp_path, ollama):
 @pytest.mark.parametrize(
     "configured,explicit,expected",
     [
-        (None, None, "gemma3:4b"),
+        (None, None, "gemma4:e4b"),
         ("qwen3.5:4b", None, "qwen3.5:4b"),
         ("qwen3.5:4b", "llama3.2:3b", "llama3.2:3b"),
     ],

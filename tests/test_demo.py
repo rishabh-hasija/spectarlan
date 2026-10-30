@@ -413,3 +413,12 @@ def test_live_network_remains_the_default_mode(demo_app):
     assert any(widget.label == "Scan for apparitions" for widget in ui.button)
     assert not any("Demo Séance: simulated" in item.value for item in ui.info)
     assert calls == {"detect": 1, "discover": 0, "live_store": 1}
+
+
+def test_demo_model_selection_does_not_change_live_preferences(demo_app):
+    ui, _, live, calls = demo_app
+    live.save_model_preference("live-local-model")
+    next(w for w in ui.text_input if w.label == "Ollama model").set_value("demo-local-model").run()
+    assert not ui.exception
+    assert live.model_preference() == "live-local-model"
+    assert calls == {"detect": 0, "discover": 0, "live_store": 0}

@@ -83,7 +83,7 @@ def test_version_two_preserves_overrides_and_historical_scan_json(version_one_da
             == expected_metadata
         )
         assert con.execute("SELECT * FROM scans").fetchall() == scans_before
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
         assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 

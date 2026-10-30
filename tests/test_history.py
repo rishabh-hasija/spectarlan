@@ -209,7 +209,7 @@ def test_reads_and_comparisons_never_overlay_metadata_or_rewrite_scans(store, mo
     assert compare_scans(history[0], store.previous_scan(history[0])) == []
     with sqlite3.connect(store.path) as con:
         assert con.execute("SELECT * FROM scans ORDER BY id").fetchall() == before
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_legacy_snapshots_do_not_fabricate_override_or_automatic_changes(store):

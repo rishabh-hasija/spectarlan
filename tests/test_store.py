@@ -199,7 +199,7 @@ def test_migration_and_edits_leave_old_scan_rows_unchanged(tmp_path):
     SnapshotStore(path)  # Repeated startup must neither reseed nor reset edited metadata.
 
     with sqlite3.connect(path) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
         assert con.execute("SELECT * FROM scans ORDER BY id").fetchall() == before
         assert con.execute("SELECT COUNT(*) FROM device_metadata").fetchone()[0] == 1
     restored = SnapshotStore(path).apply_metadata(returning, NETWORK)[0]

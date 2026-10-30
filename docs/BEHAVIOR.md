@@ -2,6 +2,35 @@
 
 [Setup and demo guide](../README.md)
 
+## Local storage and privacy
+
+SpecterLAN does not operate a backend service and does not require registration.
+Each installation stores its own network history locally on the device where it
+runs. Laptops on the same LAN maintain independent SQLite databases. SpecterLAN
+has no accounts, login system, registration, cloud sync, remote database, or
+application telemetry, and does not collect Windows account information.
+
+The OS resolves the local application-data directory automatically, without
+asking for a username, password, email, or account ID. Windows uses
+`%LOCALAPPDATA%\SpecterLAN\specterlan.db`, rather than roaming app data.
+SpecterLAN does not display or transmit the resolved storage path or extract an
+OS account name from it. OS-managed directory separation is sufficient; there
+are no SpecterLAN user profiles.
+
+Live history, device metadata, friendly names, trust labels, classification
+overrides, and the selected Ollama model preference stay in this local database.
+At startup, `OLLAMA_MODEL` takes precedence over the saved model preference, then
+the default applies. Sidebar selections are saved locally; model compatibility
+and loopback-only Ollama checks still apply at analysis time.
+
+On first startup without the new database, a legacy `.specterlan.db` in the
+working directory is copied with SQLite's backup API, including committed WAL
+data. The original remains intact. A complete copy is published without
+overwriting an existing destination, then versioned schema migrations run.
+Failures do not fall back to writing history in the working directory. Stop
+older instances before migration; later legacy writes are not synchronized.
+Demo Séance continues to use only its separate temporary database.
+
 ## Device identity and trust
 
 After scanning, open **Edit a device** to set a friendly name, device type, and
@@ -127,7 +156,7 @@ No complete audit trail of edits between scans is recorded.
 ## Local Ollama evidence analysis
 
 Open **Ask the Ghost** and select **Analyze with Ollama**. Analysis runs only
-through Ollama on this computer. The selected model defaults to `gemma3:4b`;
+through Ollama on this computer. The selected model defaults to `gemma4:e4b`;
 the sidebar or `OLLAMA_MODEL` can override it. The report shows the model
 actually returned by Ollama and the IDs of the two analyzed scans.
 

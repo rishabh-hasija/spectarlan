@@ -42,8 +42,9 @@ Demo never touches live history.
 Network inventories contain private names, addresses, vendors, and household
 equipment. Evidence stays on the machine running SpecterLAN.
 [Ollama](https://github.com/ollama/ollama) is the open-source inference runtime;
-the default model, `gemma3:4b`, is open-weight and has separate
-[Gemma model terms](https://ai.google.dev/gemma/terms).
+the default is **Gemma 4 E4B** (`gemma4:e4b`), a local open-weight model designed
+for edge deployment. Its [model license terms](https://ai.google.dev/gemma/docs/core/model_card_4)
+are separate from SpecterLAN's MIT license.
 
 Users can swap compatible installed local models. No hosted AI provider, API key,
 or paid API account is required. Prompts and evidence validation are inspectable,
@@ -92,9 +93,9 @@ The `[dev]` extra adds pytest and Ruff. No cloud deployment is required.
 Install and open Ollama, then run:
 
 ```powershell
-ollama pull gemma3:4b
+ollama pull gemma4:e4b
 ollama list
-ollama run gemma3:4b "Reply with one short sentence."
+ollama run gemma4:e4b "Reply with one short sentence."
 ```
 
 If needed, launch the Ollama app or use `ollama serve` in another terminal.
@@ -105,7 +106,7 @@ before recording; SpecterLAN never downloads it. See the
 Optional settings in the terminal used to launch SpecterLAN:
 
 ```powershell
-$env:OLLAMA_MODEL="gemma3:4b"
+$env:OLLAMA_MODEL="gemma4:e4b"
 $env:OLLAMA_URL="http://localhost:11434"
 $env:OLLAMA_NUM_CTX="16384"
 ```
@@ -144,10 +145,28 @@ The first scan is a baseline. New, vanished, returning, IP, classification, and
 metadata changes are shown. A same-MAC IP move is not a new device.
 **Recent scans (latest 10)** limits the view, not stored history.
 
-Live data is in `.specterlan.db` in the working directory. Existing schemas
-migrate automatically without rewriting historical scans. Back up this file
-with the app stopped before upgrading. Metadata edits enter history/comparisons
-after another scan; historical values remain unchanged.
+SpecterLAN does not operate a backend service and does not require registration.
+Each installation stores its own network history locally on the device where it
+runs. Two laptops on the same LAN keep independent SQLite databases and never
+share history through SpecterLAN. There are no application accounts, logins,
+Windows account-information collection, cloud sync, or application telemetry.
+The bundled Streamlit configuration disables usage statistics and binds the UI
+to loopback.
+
+Live data uses the OS local application-data directory automatically:
+`%LOCALAPPDATA%\SpecterLAN\specterlan.db` on Windows,
+`~/Library/Application Support/SpecterLAN/specterlan.db` on macOS, or
+`${XDG_DATA_HOME:-~/.local/share}/SpecterLAN/specterlan.db` on Linux.
+The database holds scan history, friendly names, trust labels, classification
+overrides, and the selected local model preference. `OLLAMA_MODEL` overrides the
+saved preference at startup; the sidebar can still select another compatible
+local model. No OS username, password, email, or account ID is requested or stored.
+
+If the new database is absent, startup imports `.specterlan.db` from the working
+directory using a SQLite backup, leaving the original intact. An existing new
+database is never replaced or merged. Schema migrations preserve historical
+scans. Stop the app before upgrading or backing up its database. Metadata edits
+enter history/comparisons after another scan; historical values remain unchanged.
 
 No usable MAC means provisional subnet/IP identity. Reused IPs can inherit
 provisional labels; IP moves cannot safely be linked. Randomized MACs can split
@@ -232,12 +251,13 @@ privacy review, and submission readiness.
 
 ```text
 app.py                       Streamlit flow and mode controls
-.streamlit/config.toml       Theme and browser error policy
+.streamlit/config.toml       Theme, loopback binding, and privacy settings
 specterlan/
   network.py                 Host discovery and boundaries
   classification.py          Deterministic local rules
   models.py                  Device, snapshot, AI response models
   store.py                   SQLite snapshots, metadata, migrations
+  storage_paths.py           OS local app data and legacy database import
   changes.py                 Snapshot comparison
   evidence.py                Two-scan fact catalog
   ai.py                      Local Ollama client and validation

@@ -142,9 +142,9 @@ def analyze_scan(
     ollama_url: str | None = None,
     timeout_seconds: float = 180.0,
 ) -> Analysis:
-    model = (model if model is not None else os.getenv("OLLAMA_MODEL", "gemma3:4b")).strip()
+    model = (model if model is not None else os.getenv("OLLAMA_MODEL", "gemma4:e4b")).strip()
     if not model or "cloud" in model.casefold():
-        raise AIAnalysisError("Choose an installed local Ollama model, such as gemma3:4b.")
+        raise AIAnalysisError("Choose an installed local Ollama model, such as gemma4:e4b.")
     base_url = _local_url(ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434"))
     evidence = build_evidence(current, previous)
     schema = AIReport.model_json_schema()

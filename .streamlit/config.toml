@@ -8,3 +8,9 @@ font = "sans serif"
 
 [client]
 showErrorDetails = "none"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+address = "127.0.0.1"

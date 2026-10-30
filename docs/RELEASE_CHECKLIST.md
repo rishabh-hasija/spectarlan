@@ -24,12 +24,16 @@ result; automated tests are not a substitute for a live scan/model rehearsal.
 
 ## Manual runtime checks
 
-- [ ] `ollama list` includes `gemma3:4b` (or the configured local model).
+- [ ] `ollama list` includes `gemma4:e4b` (or the configured local model).
 - [ ] Model is warmed and a real Ask the Ghost request succeeds.
 - [ ] Live scan on an owned/administered network succeeds; verify sidebar subnet.
 - [ ] Nmap host discovery works where installed; fallback works when unavailable.
 - [ ] Device labels persist; the same MAC keeps identity across an IP change.
 - [ ] Restart preserves live history; existing databases migrate without lost snapshots.
+- [ ] Live history uses OS local app data; legacy import retains the original database.
+- [ ] Two installations keep independent histories; no registration or identity prompt appears.
+- [ ] The local-storage caption appears; no resolved storage path is displayed.
+- [ ] Streamlit usage statistics are disabled and the UI binds to loopback.
 - [ ] Demo stages show baseline, new/unreviewed ESP, TV IP move, vanished phone.
 - [ ] Reset Demo replays cleanly without changing live history or metadata.
 - [ ] Ask the Ghost works on Demo evidence; cited facts match the explanation.

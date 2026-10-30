@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .classification import classify_observation
 from .models import Device, DeviceMetadata, SavedScan, ScanResult
+from .storage_paths import local_database_path
 
 
 def device_identity(device: Device, network: str) -> str:
@@ -23,8 +24,9 @@ def device_identity(device: Device, network: str) -> str:
 
 
 class SnapshotStore:
-    def __init__(self, path: str | Path = ".specterlan.db") -> None:
-        self.path = str(path)
+    def __init__(self, path: str | Path | None = None) -> None:
+        # Explicit paths keep tests and temporary Demo sessions independent of live data.
+        self.path = str(local_database_path() if path is None else path)
         self._init_db()
 
     @contextmanager
@@ -54,7 +56,7 @@ class SnapshotStore:
                 """
             )
             version = con.execute("PRAGMA user_version").fetchone()[0]
-            if version > 2:
+            if version > 3:
                 raise RuntimeError("This database requires a newer version of SpecterLAN.")
             if version < 1:
                 con.execute(
@@ -85,6 +87,26 @@ class SnapshotStore:
             if version < 2:
                 self._migrate_classification(con)
                 con.execute("PRAGMA user_version = 2")
+            if version < 3:
+                con.execute(
+                    "CREATE TABLE app_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                )
+                con.execute("PRAGMA user_version = 3")
+
+    def model_preference(self) -> str | None:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT value FROM app_preferences WHERE key = 'ollama_model'"
+            ).fetchone()
+        return row[0] if row else None
+
+    def save_model_preference(self, model: str) -> None:
+        with self._connect() as con:
+            con.execute(
+                """INSERT INTO app_preferences(key, value) VALUES ('ollama_model', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (model,),
+            )
 
     @staticmethod
     def _migrate_classification(con: sqlite3.Connection) -> None:
