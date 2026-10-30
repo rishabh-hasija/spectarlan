@@ -24,6 +24,17 @@ result; automated tests are not a substitute for a live scan/model rehearsal.
 
 ## Manual runtime checks
 
+- [ ] On a fresh Windows checkout, `setup_windows.ps1` creates `.venv` and installs runtime dependencies.
+- [ ] Setup with `-Dev` installs pytest/Ruff; a rerun reuses the local environment.
+- [ ] `run_specterlan.ps1 -Check` passes; missing environment/dependencies show setup instructions.
+- [ ] Launch from a path containing spaces and from another directory; project config still loads.
+- [ ] No Streamlit onboarding email prompt; the UI uses only the printed loopback URL.
+- [ ] First-run status reports storage, Python, Ollama, default/selected model, and Nmap.
+- [ ] With Ollama stopped, scanning/history/Demo work and Ask the Ghost is unavailable.
+- [ ] With the model absent, pull instructions appear; another ready local model remains usable.
+- [ ] Without Nmap, status shows fallback mode and existing fallback discovery still works.
+- [ ] Unwritable live data shows a clear blocking error; Demo remains separately selectable.
+- [ ] Startup checks never invoke discovery, generate AI output, or download model weights.
 - [ ] `ollama list` includes `gemma4:e4b` (or the configured local model).
 - [ ] Model is warmed and a real Ask the Ghost request succeeds.
 - [ ] Live scan on an owned/administered network succeeds; verify sidebar subnet.

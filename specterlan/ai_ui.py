@@ -9,17 +9,30 @@ from .store import SnapshotStore
 from .ui import show_ui_error
 
 
-def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = "live") -> None:
+def render_ai(
+    store: SnapshotStore,
+    network: str,
+    model: str,
+    key_prefix: str = "live",
+    *,
+    available: bool = True,
+) -> None:
     st.subheader("Ask the Ghost")
     st.caption(f"Local-only · open-source AI · no cloud AI · Selected model: {model}")
     st.caption(
         "Explains the latest two saved scans of this subnet. "
         "Run another scan after editing labels to include those edits."
     )
+    if not available:
+        st.info(
+            "Ask the Ghost is unavailable. Check Local setup and status. Scanning and history still work."
+        )
     try:
         current, previous = store.latest_scan_pair(network)
     except (sqlite3.Error, ValueError):
-        show_ui_error("Could not load evidence for analysis. Check local history access and refresh.")
+        show_ui_error(
+            "Could not load evidence for analysis. Check local history access and refresh."
+        )
         return
     if current is None:
         st.info("Run a scan of this subnet before asking the Ghost.")
@@ -37,6 +50,7 @@ def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = 
         "Analyze with Ollama",
         use_container_width=True,
         key=None if key_prefix == "live" else f"analyze:{key_prefix}",
+        disabled=not available,
     ):
         st.session_state.ai_report = None
         with st.spinner(f"Asking local {model} to explain the saved evidence..."):
@@ -45,7 +59,9 @@ def render_ai(store: SnapshotStore, network: str, model: str, key_prefix: str = 
             except AIAnalysisError as exc:
                 st.error(str(exc))
             except (sqlite3.Error, ValueError):
-                show_ui_error("Analysis could not load saved evidence. Check local history and retry.")
+                show_ui_error(
+                    "Analysis could not load saved evidence. Check local history and retry."
+                )
 
     analysis = st.session_state.ai_report
     if analysis is None:

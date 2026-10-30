@@ -14,6 +14,8 @@ from specterlan.demo import DEMO_LOCAL_IP, DEMO_NETWORK, DEMO_STAGES, DemoSessio
 from specterlan.history_ui import render_history
 from specterlan.models import DeviceMetadata, DeviceType, ScanResult, TrustStatus
 from specterlan.network import detect_local_network, discover
+from specterlan.readiness import supported_python, writable_storage
+from specterlan.readiness_ui import render_readiness
 from specterlan.store import SnapshotStore, device_identity
 from specterlan.ui import (
     apply_style,
@@ -54,6 +56,12 @@ if previous_mode != mode:
     st.session_state.ai_report = None
 st.session_state.active_mode = mode
 
+if not supported_python():
+    st.error(
+        "SpecterLAN requires Python 3.11 or newer. Install a supported Python and rerun setup_windows.ps1."
+    )
+    st.stop()
+
 if mode == "Demo Séance":
     st.info("Demo Séance: simulated network evidence")
     if "demo_session" not in st.session_state:
@@ -75,11 +83,43 @@ else:
     except (OSError, sqlite3.Error, RuntimeError, ValueError):
         # Filesystem exceptions can contain account names in absolute paths.
         st.error(
-            "Could not open local scan history. Check database permissions and app compatibility."
+            "Local data storage: problem. Could not open local scan history. "
+            "Check write access to %LOCALAPPDATA%\\SpecterLAN\\ and app compatibility. "
+            "You can still select Demo Séance."
         )
         render_footer()
         st.stop()
     view_key = "live"
+
+storage_ready = writable_storage(store.path)
+with st.sidebar:
+    if mode == "Live Network":
+        model = st.text_input(
+            "Ollama model",
+            value=initial_model,
+            key="local_model_preference",
+            on_change=save_model_preference,
+            args=(store,),
+        )
+    else:
+        model = st.text_input("Ollama model", value=initial_model)
+    st.caption("Your SpecterLAN data is stored locally on this device.")
+readiness_area = st.container()
+with readiness_area:
+    readiness = render_readiness(
+        storage_ready,
+        model,
+        os.getenv("OLLAMA_URL", "http://localhost:11434"),
+        demo=mode == "Demo Séance",
+    )
+if not storage_ready:
+    st.error(
+        "Local data storage: problem. SpecterLAN needs a writable data directory. "
+        "Check local folder permissions and free disk space, then refresh."
+    )
+    st.stop()
+
+if mode == "Live Network":
     try:
         local_ip, network = detect_local_network()
     except (OSError, RuntimeError, ValueError):
@@ -98,17 +138,6 @@ with st.sidebar:
     st.subheader("Scan boundary")
     st.text_input("Local IP", value=local_ip, disabled=True)
     st.text_input("Target subnet", value=network, disabled=True)
-    if mode == "Live Network":
-        model = st.text_input(
-            "Ollama model",
-            value=initial_model,
-            key="local_model_preference",
-            on_change=save_model_preference,
-            args=(store,),
-        )
-    else:
-        model = st.text_input("Ollama model", value=initial_model)
-    st.caption("Your SpecterLAN data is stored locally on this device.")
     if mode == "Live Network":
         st.caption("SpecterLAN scans only the private subnet containing this computer.")
         st.caption("MVP discovery does not perform a port scan.")
@@ -295,5 +324,5 @@ else:
         )
 
 render_history(store, network, key_prefix=view_key)
-render_ai(store, network, model, key_prefix=view_key)
+render_ai(store, network, model, key_prefix=view_key, available=readiness.selected_model_ready)
 render_footer()

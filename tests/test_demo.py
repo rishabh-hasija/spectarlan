@@ -6,7 +6,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from specterlan import demo as demo_module
-from specterlan import network
+from specterlan import network, readiness_ui
 from specterlan import store as store_module
 from specterlan.changes import compare_scans
 from specterlan.classification import classify
@@ -22,6 +22,7 @@ from specterlan.demo import (
 )
 from specterlan.evidence import build_evidence
 from specterlan.models import DeviceMetadata, ScanResult
+from specterlan.readiness import AIReadiness
 from specterlan.store import SnapshotStore
 
 
@@ -224,6 +225,9 @@ def button(ui, label):
 
 @pytest.fixture
 def demo_app(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        readiness_ui, "cached_ai_readiness", lambda *args: AIReadiness(True, True, True)
+    )
     session = DemoSession()
     live = SnapshotStore(tmp_path / "live-ui.db")
     calls = {"detect": 0, "discover": 0, "live_store": 0}

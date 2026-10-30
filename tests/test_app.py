@@ -6,9 +6,10 @@ import httpx
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from specterlan import network
+from specterlan import network, readiness_ui
 from specterlan import store as store_module
 from specterlan.models import Device, DeviceMetadata
+from specterlan.readiness import AIReadiness
 
 NETWORK = "192.168.1.0/24"
 MAC = "AA:BB:CC:DD:EE:01"
@@ -16,6 +17,9 @@ MAC = "AA:BB:CC:DD:EE:01"
 
 @pytest.fixture
 def app(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        readiness_ui, "cached_ai_readiness", lambda *args: AIReadiness(True, True, True)
+    )
     store = store_module.SnapshotStore(tmp_path / "ui.db")
     monkeypatch.setattr(store_module, "SnapshotStore", lambda: store)
     monkeypatch.setattr(network, "detect_local_network", lambda: ("192.168.1.1", NETWORK))
@@ -384,6 +388,7 @@ def test_missing_nmap_notice_does_not_block_fallback_scan(app, monkeypatch):
     ui.run()
     assert any("Nmap unavailable" in item.value for item in ui.info)
     assert any("ping + the local neighbor table" in item.value for item in ui.info)
+    assert any("**Nmap:** fallback mode" in item.value for item in ui.markdown)
     ui.button[0].click().run()
     assert not ui.exception
     assert len(store.recent_scans(NETWORK)) == 2
@@ -455,6 +460,48 @@ def test_preference_write_error_hides_filesystem_details(app, monkeypatch):
     assert not ui.exception
     assert any("Could not save the local model preference" in item.value for item in ui.error)
     assert not any("private Windows account path" in item.value for item in ui.error)
+
+
+@pytest.mark.parametrize(
+    "status", [AIReadiness(False, False, False), AIReadiness(True, False, False)]
+)
+def test_missing_ai_keeps_scanning_and_history_available(app, monkeypatch, status):
+    ui, store = app
+    monkeypatch.setattr(readiness_ui, "cached_ai_readiness", lambda *args: status)
+    ui.run()
+    assert not ui.exception
+    assert analyze_button(ui).disabled
+    assert any("ollama pull gemma4:e4b" in item.value for item in ui.code)
+    assert any("Local data storage:** ready" in item.value for item in ui.markdown)
+    ui.button[0].click().run()
+    assert len(store.recent_scans(NETWORK)) == 2
+    assert any(widget.label == "Inspect scan" for widget in ui.selectbox)
+
+
+def test_selected_override_works_when_default_model_is_missing(app, monkeypatch):
+    ui, _ = app
+    monkeypatch.setattr(
+        readiness_ui, "cached_ai_readiness", lambda *args: AIReadiness(True, False, True)
+    )
+    ui.run()
+    assert not analyze_button(ui).disabled
+
+
+def test_unwritable_storage_blocks_live_scan_and_still_allows_demo(app, monkeypatch):
+    from specterlan import readiness as readiness_module
+
+    ui, _ = app
+    check_storage = readiness_module.writable_storage
+    monkeypatch.setattr(readiness_module, "writable_storage", lambda path: False)
+    ui.run()
+    assert not ui.exception
+    assert any("writable data directory" in item.value for item in ui.error)
+    assert not any(widget.label == "Scan for apparitions" for widget in ui.button)
+    monkeypatch.setattr(readiness_module, "writable_storage", check_storage)
+    ui.radio[0].set_value("Demo Séance").run()
+    assert not ui.exception
+    assert any(widget.label == "Start Demo" for widget in ui.button)
+    ui.session_state["demo_session"].close()
 
 
 def test_empty_ai_sections_are_explicit_without_claiming_network_safety(app, monkeypatch):

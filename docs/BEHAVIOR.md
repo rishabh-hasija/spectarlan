@@ -2,6 +2,52 @@
 
 [Setup and demo guide](../README.md)
 
+## Windows launch and first run
+
+`setup_windows.ps1` creates/reuses the checkout's `.venv` and installs runtime
+dependencies with that environment's Python. `-Dev` also installs test/lint tools;
+`-Python` selects the bootstrap interpreter when creating `.venv`. Python 3.11+
+is required. Setup never installs Ollama, Nmap, or model weights and never asks
+for account details. Initial Python package downloads require internet access.
+
+`run_specterlan.ps1` uses `.venv\Scripts\python.exe` directly, checks Python and
+runtime imports, and launches from the script's directory so project configuration
+loads regardless of the invoking directory. Missing dependencies give setup
+instructions. `-Check` performs preflight without starting a server. The launcher
+binds Streamlit to `127.0.0.1`, disables usage statistics, and uses headless mode
+to avoid Streamlit's email onboarding. Open the printed local URL manually.
+
+The UI's **Local setup and status** section reports:
+
+- Local data storage: ready/problem, using an actual temporary write-and-cleanup
+  check in the opened database directory. Live storage failures block Live use;
+  the mode selector remains available. Demo checks only its temporary directory
+  and does not resolve, migrate, or open Live storage.
+- Python: unsupported versions stop with instructions to recreate the environment.
+- Ollama: ready/unavailable, determined through the loopback API rather than
+  requiring an `ollama` executable on PATH.
+- Model: `gemma4:e4b` ready/missing. A selected override is checked independently,
+  so a missing default model never disables another ready local model.
+- Nmap: available/fallback mode, based on PATH discovery. No startup scan runs.
+
+Readiness requests contain only model names, never network evidence. They use the
+same loopback endpoint validation as analysis, disable environment proxies and
+redirects, and use two-second HTTP timeouts. `/api/tags` lists models; `/api/show`
+checks local GGUF metadata and rejects remote/unverifiable models. Results are
+cached for 15 seconds per model/endpoint and rechecked on a subsequent rerun or
+page refresh. No model is pulled or loaded for generation during these checks.
+
+Unavailable Ollama or a selected model disables the analysis button while keeping
+scanning/history usable. Pull instructions are shown for the default model. Model
+readiness does not guarantee sufficient RAM, response time, or valid AI output;
+all existing validation remains in force when analysis runs. Nmap absence keeps
+the existing fallback discovery behavior. Displayed storage guidance uses the
+symbolic Windows app-data path, never account names or diagnostic filesystem paths.
+
+Executable packaging remains future work: browser assets, dependency metadata,
+configuration and subprocess behavior need validation in a frozen Windows build.
+This milestone distributes scripts and source, without a bundler or installer EXE.
+
 ## Local storage and privacy
 
 SpecterLAN does not operate a backend service and does not require registration.

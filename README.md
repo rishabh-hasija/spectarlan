@@ -59,7 +59,7 @@ SQLite is not encrypted, and diagnostic server logs may contain private details.
 ## Requirements
 
 - Python **3.11+**, Git, and a writable checkout.
-- Streamlit **1.50+**, pandas, Pydantic, psutil, httpx (installed below).
+- Streamlit **1.50+**, pandas, Pydantic, psutil, httpx, platformdirs (installed below).
 - Live mode: an active private IPv4 interface and permission to discover hosts.
 - Optional [Nmap](https://nmap.org/download.html) on PATH for richer observations.
 - Optional [Ollama for Windows](https://ollama.com/download/windows), with enough
@@ -74,19 +74,71 @@ VPNs/virtual adapters can affect interface selection; check the sidebar boundary
 ```powershell
 git clone https://github.com/rishabh-hasija/spectarlan.git
 cd spectarlan
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1 --browser.gatherUsageStats false
+powershell -ExecutionPolicy Bypass -File setup_windows.ps1
+powershell -ExecutionPolicy Bypass -File run_specterlan.ps1
 ```
 
-Open the local URL printed by Streamlit. Ctrl+C stops the app. These commands
-avoid PowerShell activation-policy changes. Run from the repository root so
-`.streamlit/config.toml` loads the theme and hides browser exception details.
+Setup creates a local `.venv` and installs runtime dependencies. It never installs
+Ollama or Nmap. Initial package/model downloads need internet access. No registration,
+login, or email is required. Your history stays in `%LOCALAPPDATA%\SpecterLAN\`.
+
+The launcher uses the checkout's virtual environment directly; activation is not
+needed. Open the printed `http://127.0.0.1:8501` URL (or the port Streamlit reports).
+Ctrl+C stops the app. The scripts work from another directory when invoked by
+their full path, including paths with spaces. `ExecutionPolicy Bypass` applies
+only to that PowerShell process; no persistent policy change is made.
+
+If Python is not found, install Python 3.11+ and rerun setup. To select a specific
+interpreter, pass `-Python 'C:\path\to\python.exe'`. Add `-Dev` to setup for pytest
+and Ruff. `run_specterlan.ps1 -Check` checks the launcher environment without
+starting Streamlit. Re-running setup updates Python dependencies in the existing
+`.venv`; after moving a checkout, recreate `.venv` rather than copying it.
+
+### First run
+
+**Local setup and status** reports local storage, Python compatibility, Ollama,
+the default `gemma4:e4b` model, and Nmap. A compatible selected model is checked
+separately when overriding the default.
+
+- **Storage problem:** Live mode stops with a permissions/free-space message.
+  Demo Séance can still use its separate writable temporary storage.
+- **Ollama unavailable or selected model missing:** scanning and history remain
+  usable; Ask the Ghost is disabled with setup instructions. Ollama is needed
+  only for Ask the Ghost. After installing and opening Ollama, run
+  `ollama pull gemma4:e4b`, then refresh the page after 15 seconds.
+- **Nmap missing:** fallback discovery remains available. Nmap is recommended
+  for richer observations, not mandatory.
+- **No live network:** select Demo Séance for simulated evidence without discovery.
+
+Checks do not download models, generate AI output, send inventory, or scan the
+network. A ready model still needs sufficient memory and may take time to respond.
+
+### Manual Python setup (advanced)
+
+From the repository root:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1 --server.headless true --browser.gatherUsageStats false
+```
+
+Run from the repository root so `.streamlit/config.toml` loads the theme, hides
+browser exception details, and suppresses Streamlit's onboarding email prompt.
 This is a source-checkout application: installing its library wheel alone does
 not install the top-level app or Streamlit configuration.
 
 For runtime dependencies only, use `pip install -e .` with the environment's Python.
 The `[dev]` extra adds pytest and Ruff. No cloud deployment is required.
+
+### Executable packaging (future work)
+
+A single executable is not part of this release. The supported route is a source
+checkout with a local virtual environment. Bundling needs a separate Windows
+validation pass for Streamlit's browser assets, package metadata, local server
+startup, configuration, and subprocess discovery. A bundler would not include or
+install Ollama, its model weights, or Nmap automatically. No PyInstaller bundle or
+installer EXE has been added.
 
 ### Ollama setup
 
@@ -251,6 +303,8 @@ privacy review, and submission readiness.
 
 ```text
 app.py                       Streamlit flow and mode controls
+setup_windows.ps1            Local virtual environment and dependency setup
+run_specterlan.ps1           Windows launcher and dependency preflight
 .streamlit/config.toml       Theme, loopback binding, and privacy settings
 specterlan/
   network.py                 Host discovery and boundaries
@@ -258,6 +312,7 @@ specterlan/
   models.py                  Device, snapshot, AI response models
   store.py                   SQLite snapshots, metadata, migrations
   storage_paths.py           OS local app data and legacy database import
+  readiness.py, readiness_ui.py  Local prerequisite checks and first-run status
   changes.py                 Snapshot comparison
   evidence.py                Two-scan fact catalog
   ai.py                      Local Ollama client and validation
