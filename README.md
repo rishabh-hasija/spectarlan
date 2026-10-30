@@ -18,13 +18,6 @@ Product: **SpecterLAN**. Repository:
 - Optional **Ask the Ghost** reports with evidence references and confidence labels.
 - **Demo Séance**: three isolated, repeatable stages without network discovery.
 
-## Why this fits Ghost in the Machine
-
-Devices appear and disappear like apparitions. Unfamiliar or forgotten gadgets
-become network “ghosts” until their owner identifies them. Local AI interprets
-changes between observations. Halloween language is presentation; findings remain
-evidence-based. Unknown does not mean malicious.
-
 ## Architecture
 
 ```mermaid

@@ -35,12 +35,12 @@ and leaves prompts, evidence, and validation available for inspection. Users can
 keep scanning and inspecting history without a model or API subscription.
 Downloads require internet initially; the app does not make cloud AI calls.
 
-## Ghost in the Machine
+## Why this fits Ghost in the Machine
 
-Devices appear, disappear, and return like apparitions. Forgotten gadgets become
-“ghosts” until identified. The local model interprets these changes, but Halloween
-language never turns discovery evidence into a threat verdict. New means newly
-observed; vanished means absent from a scan. Unknown does not mean malicious.
+Devices appear and disappear like apparitions. Unfamiliar or forgotten gadgets
+become network “ghosts” until their owner identifies them. Local AI interprets
+changes between observations. Halloween language is presentation; findings remain
+evidence-based. Unknown does not mean malicious.
 
 ## Code and demo
 
