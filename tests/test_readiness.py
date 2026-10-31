@@ -38,7 +38,7 @@ def test_ready_checks_only_metadata_without_generating_or_sending_evidence(monke
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": DEFAULT_MODEL}]})
         assert request.url.path == "/api/show"
-        assert request.content == b'{"model":"gemma4:e4b"}'
+        assert request.content == b'{"model":"gemma3:4b"}'
         return httpx.Response(200, json=local_info())
 
     settings = mock_ollama(monkeypatch, handler)
@@ -56,7 +56,7 @@ def test_missing_or_unresponsive_ollama_is_optional(monkeypatch, error):
     mock_ollama(monkeypatch, handler)
     result = check_local_ai(DEFAULT_MODEL)
     assert not result.ollama_ready and not result.selected_model_ready
-    assert "Scanning works without it" in result.message
+    assert result.message == "Ollama is not running. Network scanning still works."
     assert "private diagnostic" not in result.message
 
 
@@ -168,3 +168,81 @@ def test_streamlit_configuration_keeps_first_run_local_and_without_onboarding():
     assert config["server"]["headless"] is True
     assert config["browser"]["gatherUsageStats"] is False
     assert config["client"]["showErrorDetails"] == "none"
+
+
+@pytest.mark.parametrize(
+    "models,saved,current,expected",
+    [
+        (("gemma4:e4b", DEFAULT_MODEL), None, None, DEFAULT_MODEL),
+        ((DEFAULT_MODEL, "gemma4:e4b"), "gemma4:e4b", None, "gemma4:e4b"),
+        ((DEFAULT_MODEL, "gemma4:e4b"), "removed:model", None, DEFAULT_MODEL),
+        (("gemma4:e4b", "other:local"), "removed:model", None, "gemma4:e4b"),
+        ((), DEFAULT_MODEL, None, None),
+        ((DEFAULT_MODEL, "gemma4:e4b"), DEFAULT_MODEL, "gemma4:e4b", "gemma4:e4b"),
+        ((DEFAULT_MODEL,), None, "not-installed", DEFAULT_MODEL),
+    ],
+)
+def test_selection_priority_uses_only_discovered_models(models, saved, current, expected):
+    assert readiness.choose_model(models, saved, current) == expected
+
+
+def test_discovery_deduplicates_filters_nonchat_and_preserves_api_order(monkeypatch):
+    names = [
+        "gemma4:e4b",
+        DEFAULT_MODEL,
+        "embed:latest",
+        "large-cloud:latest",
+        "remote:local",
+        "bad:local",
+    ]
+    seen = []
+
+    def handler(request):
+        if request.url.path == "/api/tags":
+            assert str(request.url) == "http://127.0.0.1:11434/api/tags"
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        *[{"name": name} for name in names],
+                        {"name": DEFAULT_MODEL},
+                        {"name": "  "},
+                        {"name": 7},
+                        {},
+                        "invalid",
+                    ]
+                },
+            )
+        import json
+
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        info = {**local_info(), "capabilities": ["completion"]}
+        if model == "embed:latest":
+            info["capabilities"] = ["embedding"]
+        if model == "remote:local":
+            info["remote_model"] = "remote"
+        if model == "bad:local":
+            return httpx.Response(500)
+        return httpx.Response(200, json=info)
+
+    mock_ollama(monkeypatch, handler)
+    inventory = readiness.discover_local_models()
+    assert inventory.models == ("gemma4:e4b", DEFAULT_MODEL)
+    assert inventory.ollama_ready
+    assert "large-cloud:latest" not in seen
+    assert seen.count(DEFAULT_MODEL) == 1
+    assert inventory.readiness("gemma4:e4b").selected_model_ready
+    assert not inventory.readiness("not-installed").selected_model_ready
+
+
+def test_tagged_remote_model_is_excluded_before_inspection(monkeypatch):
+    def handler(request):
+        assert request.url.path == "/api/tags"
+        return httpx.Response(
+            200, json={"models": [{"name": "remote:local", "remote_model": "remote"}]}
+        )
+
+    mock_ollama(monkeypatch, handler)
+    inventory = readiness.discover_local_models()
+    assert inventory.ollama_ready and inventory.models == ()

@@ -44,7 +44,7 @@ try {
         }
         Write-Host 'Setup complete. SpecterLAN stores data locally in %LOCALAPPDATA%\SpecterLAN\.'
         Write-Host 'No registration or login. Demo Seance works without live discovery.'
-        Write-Host 'Optional AI: install and open Ollama from https://ollama.com/download/windows, then run: ollama pull gemma4:e4b'
+        Write-Host 'Optional AI: install and open Ollama from https://ollama.com/download/windows, then run: ollama pull gemma3:4b'
         Write-Host 'Scanning and history work without Ollama. Nmap is recommended, not required: https://nmap.org/download.html'
         Write-Host 'Ollama and Nmap were not installed by this helper.'
         Write-Host 'Launch: powershell -ExecutionPolicy Bypass -File run_specterlan.ps1'

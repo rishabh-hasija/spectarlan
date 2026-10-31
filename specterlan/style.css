@@ -1,6 +1,9 @@
 /* Native Streamlit theme controls colors and fonts; these rules only tune density. */
-.block-container { max-width: 1180px; padding-top: 1.5rem; padding-bottom: 1.5rem; }
-h1 { font-size: 2rem !important; letter-spacing: -0.035em; padding-bottom: .15rem !important; }
+.block-container { max-width: 1180px; padding-top: 4rem; padding-bottom: 1.5rem; }
+/* Let Streamlit size its native title; leave room for emoji and the toolbar. */
+[data-testid="stHeadingWithActionElements"] h1 {
+  line-height: 1.3; padding-top: .25rem; padding-bottom: .6rem; overflow: visible;
+}
 h2, h3 { letter-spacing: -.02em; }
 h3 { font-size: 1.2rem !important; padding-top: .8rem !important; }
 [data-testid="stMetric"] {
@@ -8,6 +11,9 @@ h3 { font-size: 1.2rem !important; padding-top: .8rem !important; }
   background: #161c26;
 }
 [data-testid="stMetricValue"] { font-size: 1.8rem; }
+[data-testid="stMetricLabel"] p {
+  white-space: normal !important; overflow: visible !important; text-overflow: clip !important;
+}
 [data-testid="stCaptionContainer"] { color: #aab5c5; }
 [data-testid="stText"] { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 900px) {

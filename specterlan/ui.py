@@ -10,33 +10,17 @@ from .models import Device, ScanResult
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = [
-    "Friendly name",
-    "State",
-    "IP",
-    "Hostname",
-    "MAC",
-    "Vendor",
-    "Device type",
-    "Trust status",
-]
-DISPLAY_ORDER = [
-    "Friendly name",
-    "State",
-    "IP",
-    "Device type",
-    "Trust status",
-    "Hostname",
-    "MAC",
-    "Vendor",
-]
+COLUMNS = ["Device", "Status", "Type", "Trust", "IP address"]
+STATUS_LABELS = {"new": "New", "known": "Known", "vanished": "Offline", "returned": "Returned"}
+TRUST_LABELS = {"trusted": "Trusted", "unreviewed": "Need review", "ignored": "Ignored"}
 STATE_STYLES = {
-    "trusted": "color: #99d8b6; background-color: #18302a;",
-    "unreviewed": "color: #f4c07c; background-color: #34291d;",
-    "ignored": "color: #b3bdcd; background-color: #242b36;",
-    "new": "color: #d5b8fa; background-color: #2b2338;",
-    "known": "color: #bbc8dd; background-color: #202b3b;",
-    "vanished": "color: #e8acac; background-color: #35262b;",
+    "Trusted": "color: #99d8b6; background-color: #18302a;",
+    "Need review": "color: #f4c07c; background-color: #34291d;",
+    "Ignored": "color: #b3bdcd; background-color: #242b36;",
+    "New": "color: #d5b8fa; background-color: #2b2338;",
+    "Known": "color: #bbc8dd; background-color: #202b3b;",
+    "Returned": "color: #99d8b6; background-color: #18302a;",
+    "Offline": "color: #e8acac; background-color: #35262b;",
 }
 
 
@@ -48,78 +32,91 @@ def apply_style() -> None:
 def render_overview(
     mode: str, network: str, result: ScanResult | None, status: str | None = None
 ) -> None:
-    context = st.columns([1, 1, 1.5])
-    context[0].caption("CURRENT MODE")
+    context = st.columns([1, 2])
     context[0].markdown(
         "**Demo Séance · simulated**" if mode == "Demo Séance" else "**Live Network**"
     )
-    context[1].caption("PRIVATE SUBNET")
-    context[1].markdown(f"**{network}**")
-    context[2].caption("SCAN STATUS")
     if status:
-        context[2].markdown(f"**{status}**")
+        context[1].markdown(f"**{status}**")
     elif result is None:
-        context[2].markdown("**Ready · no scan this session**")
+        context[1].markdown("**Ready to scan**")
     else:
-        context[2].markdown("**Snapshot saved**")
-        context[2].caption(f"{result.scanned_at.isoformat(timespec='seconds')} · {result.scanner}")
+        context[1].caption(f"Last scanned: {result.scanned_at.strftime('%H:%M:%S')}")
 
     cards = st.columns(4)
     devices = result.devices if result is not None else []
     values = [
-        ("Online", len(devices)),
-        ("New apparitions", sum(device.state == "new" for device in devices)),
-        ("Unreviewed", sum(device.trust_status == "unreviewed" for device in devices)),
-        ("Vanished", len(result.vanished) if result is not None else 0),
+        ("Devices online", len(devices)),
+        ("New devices", sum(device.state == "new" for device in devices)),
+        ("Need review", sum(device.trust_status == "unreviewed" for device in devices)),
+        ("Offline since last scan", len(result.vanished) if result is not None else 0),
     ]
     for card, (label, value) in zip(cards, values, strict=True):
         card.metric(label, value if result is not None else "—")
-    if result is not None:
-        st.caption(
-            f"Trusted {sum(device.trust_status == 'trusted' for device in devices)} · "
-            f"Known {sum(device.state == 'known' for device in devices)} · "
-            f"Ignored {sum(device.trust_status == 'ignored' for device in devices)} · "
-            f"Unidentified {sum(device.device_type == 'unknown' for device in devices)}"
-        )
+    st.caption("New devices are newly seen on this network. Unknown does not mean malicious.")
 
 
-def render_device_table(devices: list[Device]) -> None:
-    rows = [
+def device_name(device: Device) -> str:
+    return device.friendly_name.strip() or (device.hostname or "").strip() or "Unknown device"
+
+
+def device_rows(
+    devices: list[Device], returned_ips: set[str] | None = None
+) -> list[dict[str, str]]:
+    return [
         {
-            "Friendly name": device.friendly_name,
-            "State": device.state,
-            "IP": device.ip,
-            "Hostname": device.hostname or "",
-            "MAC": device.mac or "",
-            "Vendor": device.vendor or "",
-            "Device type": device.device_type,
-            "Trust status": device.trust_status,
+            "Device": device_name(device),
+            "Status": "Returned"
+            if device.ip in (returned_ips or set())
+            else STATUS_LABELS[device.state],
+            "Type": "TV"
+            if device.device_type == "tv"
+            else device.device_type.replace("_", " ").capitalize(),
+            "Trust": TRUST_LABELS[device.trust_status],
+            "IP address": device.ip,
         }
         for device in devices
     ]
+
+
+def render_technical_devices(devices: list[Device]) -> None:
+    for device in devices:
+        st.text(device_name(device))
+        st.json(
+            {
+                "IP address": device.ip,
+                "MAC address": device.mac,
+                "Hostname": device.hostname,
+                "Vendor": device.vendor,
+                "Automatic type": device.automatic_device_type,
+                "Automatic classification reason": device.classification_reason,
+                "Classification override": device.device_type_override,
+            },
+            expanded=False,
+        )
+
+
+def render_device_table(devices: list[Device], returned_ips: set[str] | None = None) -> None:
+    rows = device_rows(devices, returned_ips)
     frame = pd.DataFrame(rows, columns=COLUMNS)
     styled = frame.style.apply(
         lambda column: [STATE_STYLES.get(value, "") for value in column],
-        subset=["State", "Trust status"],
+        subset=["Status", "Trust"],
     )
     st.dataframe(
         styled,
         hide_index=True,
         use_container_width=True,
-        column_order=DISPLAY_ORDER,
         column_config={
-            "Friendly name": st.column_config.TextColumn("Friendly name", width=160),
-            "State": st.column_config.TextColumn(
-                "Presence", width=90, help="Newly observed, known, or absent."
+            "Device": st.column_config.TextColumn("Device", width=180),
+            "Status": st.column_config.TextColumn(
+                "Status", width=100, help="New, known, offline, or returned."
             ),
-            "Trust status": st.column_config.TextColumn(
+            "Trust": st.column_config.TextColumn(
                 "Trust", width=110, help="Your inventory label, not an access-control decision."
             ),
-            "IP": st.column_config.TextColumn("IP address", width=140),
-            "Device type": st.column_config.TextColumn("Type", width=130),
-            "Hostname": st.column_config.TextColumn("Hostname", width=180),
-            "MAC": st.column_config.TextColumn("MAC address", width=180),
-            "Vendor": st.column_config.TextColumn("Vendor hint", width="medium"),
+            "IP address": st.column_config.TextColumn("IP address", width=140),
+            "Type": st.column_config.TextColumn("Type", width=130),
         },
         height=min(380, max(120, 38 + len(rows) * 35)),
     )

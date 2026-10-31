@@ -1,28 +1,29 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 
 import streamlit as st
 
-from .ai import AIAnalysisError, Analysis, analyze_latest
+from .ai import AIAnalysisError, AIGroundingError, Analysis, analyze_latest
 from .store import SnapshotStore
 from .ui import show_ui_error
+
+logger = logging.getLogger(__name__)
 
 
 def render_ai(
     store: SnapshotStore,
     network: str,
-    model: str,
+    model: str | None,
     key_prefix: str = "live",
     *,
     available: bool = True,
 ) -> None:
     st.subheader("Ask the Ghost")
-    st.caption(f"Local-only · open-source AI · no cloud AI · Selected model: {model}")
-    st.caption(
-        "Explains the latest two saved scans of this subnet. "
-        "Run another scan after editing labels to include those edits."
-    )
+    st.caption("Let your local AI explain what changed on your network.")
+    st.caption("Runs locally. No cloud AI.")
+    st.caption(f"Selected model: {model or 'none'}")
     if not available:
         st.info(
             "Ask the Ghost is unavailable. Check Local setup and status. Scanning and history still work."
@@ -35,7 +36,7 @@ def render_ai(
         )
         return
     if current is None:
-        st.info("Run a scan of this subnet before asking the Ghost.")
+        st.info("Scan your network before asking the Ghost.")
         return
 
     pair = (current.id, previous.id if previous else None)
@@ -50,14 +51,28 @@ def render_ai(
         "Analyze with Ollama",
         use_container_width=True,
         key=None if key_prefix == "live" else f"analyze:{key_prefix}",
-        disabled=not available,
+        disabled=not available or model is None,
     ):
         st.session_state.ai_report = None
         with st.spinner(f"Asking local {model} to explain the saved evidence..."):
             try:
                 st.session_state.ai_report = analyze_latest(store, network, model=model)
+            except AIGroundingError:
+                logger.warning("Local AI response failed grounding checks.")
+                st.error(
+                    "Ask the Ghost couldn't verify enough of the AI response against the saved network evidence."
+                )
+                st.caption("Your scan data is unchanged. Try the analysis again.")
+                with st.expander("Technical details"):
+                    st.text(
+                        "The local model returned observations or references that could not be matched to the saved evidence."
+                    )
             except AIAnalysisError as exc:
-                st.error(str(exc))
+                logger.warning("Local AI analysis failed: %s", exc)
+                st.error("Ask the Ghost couldn't get a response from the local AI.")
+                st.caption("Check that Ollama is running and the selected model is available.")
+                with st.expander("Technical details"):
+                    st.text(str(exc))
             except (sqlite3.Error, ValueError):
                 show_ui_error(
                     "Analysis could not load saved evidence. Check local history and retry."
@@ -69,11 +84,11 @@ def render_ai(
             "Optional: ask your local model to explain the saved evidence. Scanning works without Ollama."
         )
         return
-    st.caption(
-        f"Model used: {analysis.model} | latest saved scan #{analysis.current_scan_id} | "
-        f"previous scan: {analysis.previous_scan_id if analysis.previous_scan_id is not None else 'none'}. "
-        "Local model interpretation; review the cited observations."
-    )
+    st.caption(f"Model used: {analysis.model}. Review the explanation against its evidence.")
+    if analysis.partial:
+        st.warning(
+            "Some AI items could not be verified and were omitted. Showing only parts that passed evidence checks."
+        )
     report = analysis.report
     with st.container(border=True):
         st.caption("OVERVIEW")
@@ -102,6 +117,13 @@ def render_ai(
     else:
         st.caption("No additional checks suggested.")
     with st.expander("Evidence used"):
+        if analysis.retried:
+            st.caption("One local citation-correction retry was attempted with the same evidence.")
+        st.caption(
+            "Explains the latest two saved scans of this subnet. "
+            "Run another scan after editing labels to include those edits. "
+            f"Latest scan #{analysis.current_scan_id}; previous scan: {analysis.previous_scan_id}."
+        )
         for item in report.evidence_summary:
             st.text(item.summary)
             st.caption("Evidence: " + ", ".join(item.evidence))

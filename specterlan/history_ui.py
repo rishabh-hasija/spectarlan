@@ -8,29 +8,25 @@ import streamlit as st
 from .changes import compare_scans
 from .models import SavedScan
 from .store import SnapshotStore
-from .ui import render_device_table, show_ui_error
+from .ui import device_name, render_device_table, render_technical_devices, show_ui_error
 
 CHANGE_LABELS = (
-    ("new", "NEW"),
-    ("vanished", "VANISHED"),
-    ("ip_changed", "IP CHANGED"),
-    ("classification_changed", "CLASSIFICATION CHANGED"),
-    ("metadata_changed", "METADATA CHANGED"),
-    ("returned", "SEEN AGAIN"),
+    ("new", "New devices"),
+    ("vanished", "Offline since last scan"),
+    ("ip_changed", "Address updated"),
+    ("classification_changed", "Device type updated"),
+    ("metadata_changed", "Device details updated"),
+    ("returned", "Returned"),
 )
 
 
 def _show_changes(current: SavedScan, previous: SavedScan | None, key_prefix: str) -> None:
     if previous is None:
-        st.info("First scan of this subnet: baseline saved; no previous scan to compare.")
+        st.info("First scan complete. SpecterLAN will show changes after your next scan.")
         return
-    st.caption(
-        f"Scan #{current.id} at {current.scanned_at.isoformat(timespec='seconds')} "
-        f"compared with #{previous.id} at {previous.scanned_at.isoformat(timespec='seconds')}."
-    )
     changes = compare_scans(current, previous)
     if not changes:
-        st.info("No meaningful changes since the previous scan.")
+        st.info("No important changes since your last scan.")
         return
     counts = Counter(change.kind for change in changes)
     st.caption(
@@ -54,9 +50,19 @@ def _show_changes(current: SavedScan, previous: SavedScan | None, key_prefix: st
         visible = group if show_all else group[:5]
         for change in visible:
             device = change.device
-            name = device.friendly_name or device.hostname or device.mac or device.ip
+            name = device_name(device)
             with st.container(border=True):
-                st.text(f"{name}\n" + "\n".join(change.details))
+                descriptions = {
+                    "new": "Newly seen on this network.",
+                    "vanished": "Not seen in the latest scan; it may be asleep or unavailable.",
+                    "returned": "Back online after being absent from the previous scan.",
+                    "ip_changed": "The same device has a different IP address.",
+                    "classification_changed": "The suggested device type changed.",
+                    "metadata_changed": "Saved device details changed.",
+                }
+                st.text(f"{name}\n{descriptions[kind]}")
+                with st.expander("Technical details"):
+                    st.text("\n".join(change.details))
         if len(group) > 5 and not show_all:
             st.caption(f"Showing 5 of {len(group)}. Select Show all changes to see the rest.")
 
@@ -69,9 +75,9 @@ def _summary(scan: SavedScan) -> dict[str, object]:
         "Subnet": scan.network,
         "Online": len(scan.devices),
         "New": sum(device.state == "new" for device in scan.devices),
-        "Vanished": len(scan.vanished),
+        "Offline since last scan": len(scan.vanished),
         "Trusted": states["trusted"],
-        "Unreviewed": states["unreviewed"],
+        "Need review": states["unreviewed"],
     }
 
 
@@ -85,13 +91,10 @@ def render_history(store: SnapshotStore, network: str, key_prefix: str = "live")
         show_ui_error("Scan history could not load. Check local database access, then refresh.")
         return
     if not scans:
-        st.info(f"No saved scans for {network}. Run a scan to establish a baseline.")
+        st.info("No scan yet. Scan your network to see which devices are currently connected.")
         return
 
-    st.caption(
-        f"Current subnet: {network}. Changes use saved snapshots. "
-        "Metadata edits appear here after the next scan captures them."
-    )
+    st.caption("Device edits appear in comparisons after your next scan.")
     _show_changes(scans[0], previous, key_prefix)
 
     with st.expander("Recent scans (latest 10)"):
@@ -112,7 +115,21 @@ def render_history(store: SnapshotStore, network: str, key_prefix: str = "live")
             "Older scans may lack metadata or automatic classification details."
         )
         if selected.devices:
-            render_device_table(selected.devices)
+            try:
+                selected_previous = store.previous_scan(selected)
+            except (sqlite3.Error, ValueError):
+                show_ui_error(
+                    "The preceding scan could not load. Refresh or inspect another saved scan."
+                )
+                return
+            returned_ips = {
+                change.device.ip
+                for change in compare_scans(selected, selected_previous)
+                if change.kind == "returned"
+            }
+            render_device_table(selected.devices, returned_ips)
+            with st.expander("Technical details"):
+                render_technical_devices(selected.devices)
         else:
             st.info("This scan recorded no online devices.")
         if selected.id != scans[0].id:

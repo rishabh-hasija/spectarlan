@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from specterlan import ai
-from specterlan.evidence import build_evidence
+from specterlan.evidence import build_evidence, format_evidence, safe_diagnostics
 from specterlan.models import AIReport, Device, SavedScan, ScanResult
 from specterlan.store import SnapshotStore
 
@@ -42,7 +42,7 @@ def snapshot(scan_id=2, devices=None, network=NETWORK):
 
 def valid_report():
     return {
-        "overview": "One device was recorded in the latest scan [current.scan].",
+        "overview": "One device was recorded in the latest scan [E1].",
         "notable_changes": [
             {
                 "title": "Newly observed unreviewed device",
@@ -50,28 +50,27 @@ def valid_report():
                     "SpecterLAN newly observed 192.168.1.47. It is unreviewed, and automatic "
                     "classification suggests smart_home. Identify the device manually."
                 ),
-                "evidence": ["current.device.0", "change.0"],
+                "evidence": ["E2", "E3"],
                 "confidence": "high",
             }
         ],
         "devices_to_verify": [
             {
-                "identity": "mac:AABBCCDDEE01",
                 "reason": "Identify this unreviewed device.",
-                "evidence": ["current.device.0"],
+                "evidence": ["E2"],
                 "confidence": "medium",
             }
         ],
         "suggested_checks": [
             {
                 "check": "Check whether 192.168.1.47 is your smart plug.",
-                "evidence": ["current.device.0"],
+                "evidence": ["E2"],
             }
         ],
         "evidence_summary": [
             {
                 "summary": "The saved device is unreviewed and its hostname is esphome-plug.",
-                "evidence": ["current.device.0"],
+                "evidence": ["E2"],
             }
         ],
     }
@@ -79,7 +78,7 @@ def valid_report():
 
 def sent_evidence(request):
     prompt = json.loads(request.content)["messages"][1]["content"]
-    return json.loads(prompt.removeprefix("EVIDENCE:\n").split("\n\nJSON SCHEMA:")[0])
+    return prompt.split("AVAILABLE EVIDENCE:\n", 1)[1].split("\n\nJSON SCHEMA:")[0]
 
 
 @pytest.fixture
@@ -89,7 +88,9 @@ def ollama(monkeypatch):
     monkeypatch.delenv("OLLAMA_URL", raising=False)
     monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
 
-    def install(report=None, envelope=None, show=None, fail=None, status=None, raw=None):
+    def install(
+        report=None, envelope=None, show=None, fail=None, status=None, raw=None, reports=None
+    ):
         calls, settings = [], []
 
         def handler(request):
@@ -111,15 +112,17 @@ def ollama(monkeypatch):
             assert request.url.path == "/api/chat"
             if raw is not None:
                 return httpx.Response(200, text=raw)
+            output = report if report is not None else valid_report()
+            if reports is not None:
+                index = sum(call.url.path == "/api/chat" for call in calls) - 1
+                output = reports[min(index, len(reports) - 1)]
             body = (
                 envelope
                 if envelope is not None
                 else {
                     "model": json.loads(request.content)["model"],
                     "done": True,
-                    "message": {
-                        "content": json.dumps(report if report is not None else valid_report())
-                    },
+                    "message": {"content": json.dumps(output)},
                 }
             )
             return httpx.Response(200, json=body)
@@ -139,10 +142,10 @@ def test_first_scan_payload_has_only_available_evidence():
     assert evidence["has_previous_scan"] is False
     assert evidence["previous_scan"] is None
     assert evidence["previous_devices"] == []
-    assert evidence["changes"]["new_devices"] == ["change.0"]
+    assert evidence["changes"]["new_devices"] == ["E3"]
     assert evidence["changes"]["vanished_devices"] == []
     assert evidence["changes"]["returning_devices"] == []
-    device = evidence["facts"]["current.device.0"]
+    device = evidence["facts"]["E2"]
     assert device["mac_present"] is True
     assert device["identity_basis"] == "mac"
     assert device["trust_status"] == "unreviewed"
@@ -150,7 +153,7 @@ def test_first_scan_payload_has_only_available_evidence():
     assert device["classification_reason"] == "Hostname contains 'esphome'"
     assert device["vendor"] == "Tuya"
     assert device["hostname"] == "esphome-plug"
-    assert evidence["facts"]["current.scan"]["timestamp"].endswith("+00:00")
+    assert evidence["facts"][evidence["current_scan"]]["timestamp"].endswith("+00:00")
 
 
 def test_evidence_covers_each_change_without_extra_history():
@@ -206,7 +209,7 @@ def test_no_mac_and_legacy_fields_remain_honest():
         devices=[Device.model_validate({"ip": "192.168.1.2"})],
     )
     evidence = build_evidence(legacy)
-    device = evidence["facts"]["current.device.0"]
+    device = evidence["facts"]["E2"]
     assert device["mac_present"] is False
     assert device["identity_basis"] == "provisional_subnet_ip"
     assert "trust_status" not in device
@@ -222,15 +225,17 @@ def test_invalid_comparison_pair_is_rejected(previous):
 def test_structured_new_device_result_is_grounded_and_default_model_is_local(ollama):
     calls, settings = ollama()
     result = ai.analyze_scan(snapshot())
-    assert result.model == "gemma4:e4b"
+    assert result.model == "gemma3:4b"
     assert result.report.notable_changes[0].confidence == "high"
     assert "newly observed" in result.report.notable_changes[0].explanation
     assert len(calls) == 2
-    assert json.loads(calls[0].content) == {"model": "gemma4:e4b"}
+    assert json.loads(calls[0].content) == {"model": "gemma3:4b"}
     payload = json.loads(calls[1].content)
     assert payload["stream"] is False
     assert payload["options"]["temperature"] == 0
-    assert payload["format"] == AIReport.model_json_schema()
+    assert payload["format"] == AIReport.citation_schema(list(result.evidence["facts"]))
+    assert "Use only evidence IDs listed in AVAILABLE_EVIDENCE_IDS." in ai.SYSTEM_PROMPT
+    assert payload["messages"][1]["content"].startswith("AVAILABLE_EVIDENCE_IDS:\nE1\nE2\nE3\n")
     assert settings[0]["trust_env"] is False
     assert settings[0]["follow_redirects"] is False
     assert "untrusted DATA" in ai.SYSTEM_PROMPT
@@ -239,22 +244,22 @@ def test_structured_new_device_result_is_grounded_and_default_model_is_local(oll
 
 def test_vanished_device_interpretation_cites_previous_observation(ollama):
     report = valid_report()
-    report["overview"] = "No devices were observed in this scan [current.scan]."
+    report["overview"] = "No devices were observed in this scan [E1]."
     report["notable_changes"] = [
         {
             "title": "Absent from latest scan",
             "explanation": "192.168.1.47 was observed previously and is absent from the latest scan.",
-            "evidence": ["change.0", "previous.device.0"],
+            "evidence": ["E4", "E3"],
             "confidence": "high",
         }
     ]
-    report["devices_to_verify"][0]["evidence"] = ["previous.device.0"]
-    report["suggested_checks"][0]["evidence"] = ["previous.device.0"]
-    report["evidence_summary"][0]["evidence"] = ["previous.device.0"]
+    report["devices_to_verify"][0]["evidence"] = ["E3"]
+    report["suggested_checks"][0]["evidence"] = ["E3"]
+    report["evidence_summary"][0]["evidence"] = ["E3"]
     ollama(report=report)
     result = ai.analyze_scan(snapshot(2, []), snapshot(1))
     assert result.report.notable_changes[0].title == "Absent from latest scan"
-    assert result.evidence["changes"]["vanished_devices"] == ["change.0"]
+    assert result.evidence["changes"]["vanished_devices"] == ["E4"]
 
 
 def test_latest_pair_is_same_subnet_only_and_does_not_write_history(tmp_path, ollama):
@@ -281,8 +286,9 @@ def test_latest_pair_is_same_subnet_only_and_does_not_write_history(tmp_path, ol
     result = ai.analyze_latest(store, NETWORK)
     assert (result.current_scan_id, result.previous_scan_id) == (4, 2)
     sent = sent_evidence(calls[-1])
-    assert sent["facts"]["current.scan"]["scan_id"] == 4
-    assert sent["facts"]["previous.scan"]["scan_id"] == 2
+    assert result.evidence["facts"][result.evidence["current_scan"]]["scan_id"] == 4
+    assert result.evidence["facts"][result.evidence["previous_scan"]]["scan_id"] == 2
+    assert "latest" in sent and "previous" in sent
     assert "OLDER OMITTED" not in json.dumps(sent)
     assert "OTHER SUBNET" not in json.dumps(sent)
     with sqlite3.connect(store.path) as con:
@@ -299,7 +305,9 @@ def test_no_saved_scan_has_actionable_error(tmp_path, ollama):
 @pytest.mark.parametrize(
     "configured,explicit,expected",
     [
-        (None, None, "gemma4:e4b"),
+        (None, None, "gemma3:4b"),
+        ("gemma4:e4b", None, "gemma4:e4b"),
+        (None, "gemma4:e4b", "gemma4:e4b"),
         ("qwen3.5:4b", None, "qwen3.5:4b"),
         ("qwen3.5:4b", "llama3.2:3b", "llama3.2:3b"),
     ],
@@ -458,25 +466,19 @@ def test_output_schema_rejects_invalid_notable_change(field, value):
 @pytest.mark.parametrize(
     "change,match",
     [
-        ("citation", "unavailable evidence"),
-        ("overview", "overview did not cite"),
-        ("identity", "unsupported device"),
-        ("address", "address absent"),
+        ("identity", "devices_to_verify"),
+        ("address", "suggested_checks"),
     ],
 )
 def test_unsupported_claim_references_are_rejected(ollama, change, match):
     report = valid_report()
-    if change == "citation":
-        report["notable_changes"][0]["evidence"] = ["change.999"]
-    elif change == "overview":
-        report["overview"] = "A generic report with no supporting citation."
-    elif change == "identity":
-        report["devices_to_verify"][0]["identity"] = "invented-device"
+    if change == "identity":
+        report["devices_to_verify"][0]["evidence"] = ["E1"]
     else:
         report["suggested_checks"][0]["check"] = "Check 203.0.113.99."
     ollama(report=report)
-    with pytest.raises(ai.AIAnalysisError, match=match):
-        ai.analyze_scan(snapshot())
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and not getattr(result.report, match)
 
 
 @pytest.mark.parametrize(
@@ -486,13 +488,14 @@ def test_discovery_only_security_labels_are_not_displayed(ollama, label):
     report = valid_report()
     report["notable_changes"][0]["explanation"] = f"This device is {label}."
     ollama(report=report)
-    with pytest.raises(ai.AIAnalysisError, match="security language"):
-        ai.analyze_scan(snapshot())
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and not result.report.notable_changes
+    assert label not in result.report.model_dump_json()
 
 
 def test_oversized_evidence_is_not_silently_truncated(ollama):
     calls, _ = ollama()
-    current = snapshot(devices=[Device(ip="192.168.1.2", friendly_name="x" * 50000)])
+    current = snapshot(devices=[Device(ip="192.168.1.2", hostname="x" * 50000)])
     with pytest.raises(ai.AIAnalysisError, match="context budget"):
         ai.analyze_scan(current)
     assert calls == []
@@ -501,11 +504,11 @@ def test_oversized_evidence_is_not_silently_truncated(ollama):
 def test_empty_baseline_has_no_invented_devices_or_changes(ollama):
     report = valid_report()
     report.update(
-        overview="No devices were observed; there is no comparison scan [current.scan].",
+        overview="No devices were observed; there is no comparison scan [E1].",
         notable_changes=[],
         devices_to_verify=[],
         suggested_checks=[],
-        evidence_summary=[{"summary": "Zero online devices.", "evidence": ["current.scan"]}],
+        evidence_summary=[{"summary": "Zero online devices.", "evidence": ["E1"]}],
     )
     ollama(report=report)
     result = ai.analyze_scan(snapshot(devices=[]))
@@ -521,7 +524,7 @@ def test_ip_move_analysis_uses_same_identity_and_before_after_evidence(ollama):
         {
             "title": "IP address changed",
             "explanation": "The same recorded MAC identity moved from 192.168.1.20 to 192.168.1.31.",
-            "evidence": ["change.0", "current.device.0", "previous.device.0"],
+            "evidence": ["E5", "E2", "E4"],
             "confidence": "high",
         }
     ]
@@ -529,5 +532,452 @@ def test_ip_move_analysis_uses_same_identity_and_before_after_evidence(ollama):
     ollama(report=report)
     result = ai.analyze_scan(current, previous)
     assert result.evidence["changes"]["new_devices"] == []
-    assert result.evidence["changes"]["ip_changes"] == ["change.0"]
+    assert result.evidence["changes"]["ip_changes"] == ["E5"]
     assert result.report.notable_changes[0].confidence == "high"
+
+
+def test_short_evidence_ids_are_deterministic_and_all_links_resolve():
+    current, previous = snapshot(2), snapshot(1)
+    evidence = build_evidence(current, previous)
+    assert evidence == build_evidence(current.model_copy(deep=True), previous.model_copy(deep=True))
+    assert list(evidence["facts"]) == [f"E{n}" for n in range(1, len(evidence["facts"]) + 1)]
+    refs = [
+        evidence["current_scan"],
+        evidence["previous_scan"],
+        *evidence["current_devices"],
+        *evidence["previous_devices"],
+    ]
+    refs += [ref for group in evidence["changes"].values() for ref in group]
+    assert all(ref in evidence["facts"] for ref in refs)
+    for fact in evidence["facts"].values():
+        for field in ("current_device", "previous_device"):
+            assert fact.get(field) is None or fact[field] in evidence["facts"]
+
+
+def test_every_wire_citation_is_constrained_to_available_ids():
+    schema = AIReport.citation_schema(["E1", "E2"])
+    definitions = [
+        definition
+        for definition in schema["$defs"].values()
+        if "evidence" in definition.get("properties", {})
+    ]
+    assert len(definitions) == 4
+    assert all(d["properties"]["evidence"]["items"]["enum"] == ["E1", "E2"] for d in definitions)
+    assert (
+        "enum"
+        not in AIReport.model_json_schema()["$defs"]["NotableChange"]["properties"]["evidence"][
+            "items"
+        ]
+    )
+
+
+def test_plain_overview_is_allowed_when_structured_sections_are_grounded(ollama):
+    report = valid_report()
+    report["overview"] = "One device was recorded in the latest scan."
+    calls, _ = ollama(report=report)
+    result = ai.analyze_scan(snapshot())
+    assert result.report.overview == report["overview"]
+    assert not result.retried and not result.partial and len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "invented", ["E999", "current.scan", "new_devices", "Device ESP", "[E2]", "e2"]
+)
+def test_unavailable_ids_reject_the_whole_item_not_just_the_bad_reference(ollama, invented):
+    report = valid_report()
+    report["notable_changes"][0]["evidence"] = ["E2", invented]
+    calls, _ = ollama(report=report)
+    result = ai.analyze_scan(snapshot())
+    assert result.report.notable_changes == []
+    assert len(result.report.devices_to_verify) == 1
+    assert result.partial and result.retried
+    assert len(calls) == 3
+    assert all(
+        ref in result.evidence["facts"]
+        for section in (
+            result.report.devices_to_verify,
+            result.report.suggested_checks,
+            result.report.evidence_summary,
+        )
+        for item in section
+        for ref in item.evidence
+    )
+
+
+def test_gemma3_structurally_valid_response_with_one_unavailable_id_is_retried_and_corrected(
+    ollama,
+):
+    first = valid_report()
+    first["suggested_checks"][0]["evidence"] = ["E404"]
+    calls, settings = ollama(reports=[first, valid_report()])
+    result = ai.analyze_scan(snapshot(), model="gemma3:4b")
+    chats = [json.loads(call.content) for call in calls if call.url.path == "/api/chat"]
+    assert len(chats) == 2 and result.retried and not result.partial
+    assert all(chat["model"] == "gemma3:4b" for chat in chats)
+    assert chats[0]["format"] == chats[1]["format"]
+    assert chats[0]["options"] == chats[1]["options"]
+    assert chats[0]["messages"] == chats[1]["messages"][:2]
+    assert sent_evidence(calls[1]) == sent_evidence(calls[2])
+    correction = chats[1]["messages"][-1]["content"]
+    assert "AVAILABLE_EVIDENCE_IDS:\nE1\nE2\nE3" in correction
+    assert "Correct only" in correction
+    assert settings[0] == {"trust_env": False, "follow_redirects": False, "timeout": 180.0}
+    assert len(result.report.suggested_checks) == 1
+
+
+def invalid_report():
+    report = valid_report()
+    for section in ("notable_changes", "devices_to_verify", "suggested_checks", "evidence_summary"):
+        for item in report[section]:
+            item["evidence"] = ["E404"]
+    return report
+
+
+def test_all_invalid_citations_fail_after_exactly_one_retry(ollama):
+    calls, _ = ollama(report=invalid_report())
+    with pytest.raises(ai.AIGroundingError) as caught:
+        ai.analyze_scan(snapshot())
+    assert len(calls) == 3
+    assert "could not be matched to the saved evidence" in str(caught.value)
+    assert "E404" not in str(caught.value)
+
+
+def test_valid_sections_survive_even_if_the_only_summary_item_is_invalid(ollama):
+    report = valid_report()
+    report["evidence_summary"][0]["evidence"] = ["E404"]
+    ollama(report=report)
+    result = ai.analyze_scan(snapshot())
+    assert result.partial
+    assert result.report.evidence_summary == []
+    assert result.report.notable_changes and result.report.devices_to_verify
+    assert "One device was recorded" not in result.report.overview
+    # The original response schema still requires a summary; only safe display subsets may omit it.
+    report["evidence_summary"] = []
+    with pytest.raises(ValidationError):
+        AIReport.model_validate(report)
+
+
+def test_first_valid_parts_survive_when_retry_is_entirely_ungrounded(ollama):
+    first = valid_report()
+    first["suggested_checks"][0]["evidence"] = ["E404"]
+    ollama(reports=[first, invalid_report()])
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and result.retried
+    assert result.report.notable_changes and result.report.evidence_summary
+    assert not result.report.suggested_checks
+
+
+def test_retry_can_salvage_valid_items_after_an_entirely_invalid_first_response(ollama):
+    second = valid_report()
+    second["notable_changes"][0]["evidence"] = ["E404"]
+    ollama(reports=[invalid_report(), second])
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and result.report.suggested_checks
+    assert not result.report.notable_changes
+
+
+def test_invalid_overview_reference_does_not_borrow_valid_items_citations(ollama):
+    report = valid_report()
+    report["overview"] = "A claim with invented support [E404]."
+    ollama(report=report)
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and result.retried
+    assert (
+        result.report.overview
+        == "Some AI observations could not be verified against the saved scan evidence. Verified findings are shown below."
+    )
+    assert result.report.notable_changes
+
+
+def test_invented_inline_citation_rejects_its_item(ollama):
+    report = valid_report()
+    report["suggested_checks"][0]["check"] += " [E404]"
+    ollama(report=report)
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and not result.report.suggested_checks
+
+
+def test_retry_connection_failure_is_distinct_when_nothing_can_be_salvaged(ollama):
+    chats = []
+
+    def fail(request):
+        if request.url.path == "/api/chat":
+            chats.append(request)
+            if len(chats) == 2:
+                raise httpx.ConnectError("refused", request=request)
+
+    ollama(report=invalid_report(), fail=fail)
+    with pytest.raises(ai.AIAnalysisError, match="Start Ollama") as caught:
+        ai.analyze_scan(snapshot())
+    assert not isinstance(caught.value, ai.AIGroundingError)
+
+
+def test_retry_transport_failure_preserves_safe_first_response_items(ollama):
+    report = valid_report()
+    report["suggested_checks"][0]["evidence"] = ["E404"]
+    chats = []
+
+    def fail(request):
+        if request.url.path == "/api/chat":
+            chats.append(request)
+            if len(chats) == 2:
+                raise httpx.ReadTimeout("timed out", request=request)
+
+    ollama(report=report, fail=fail)
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and result.retried
+    assert result.report.notable_changes and not result.report.suggested_checks
+
+
+def test_retry_with_a_different_returned_model_is_not_accepted(ollama, monkeypatch):
+    first = valid_report()
+    first["notable_changes"][0]["evidence"] = ["E404"]
+    ollama(reports=[first, valid_report()])
+    request_report = ai._request_report
+    responses = []
+
+    def different_model(*args):
+        report, model = request_report(*args)
+        responses.append(report)
+        return report, model if len(responses) == 1 else "different:local"
+
+    monkeypatch.setattr(ai, "_request_report", different_model)
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and result.retried and result.model == "gemma3:4b"
+    assert not result.report.notable_changes
+
+
+def test_repair_never_truncates_evidence_to_fit_the_context_budget(ollama):
+    report = valid_report()
+    report["notable_changes"][0]["explanation"] = "x" * 20000
+    report["notable_changes"][0]["evidence"] = ["E404"]
+    calls, _ = ollama(report=report)
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and not result.retried
+    assert len(calls) == 2
+    assert sent_evidence(calls[-1]) == format_evidence(result.evidence)
+
+
+def test_unavailable_citation_item_is_dropped_without_displaying_its_unsafe_claims(ollama):
+    report = valid_report()
+    report["notable_changes"][0].update(
+        explanation="An intruder is at 203.0.113.99.", evidence=["E404"]
+    )
+    ollama(report=report)
+    result = ai.analyze_scan(snapshot())
+    assert result.partial and not result.report.notable_changes
+    assert "203.0.113.99" not in result.report.model_dump_json()
+    assert "intruder" not in result.report.model_dump_json()
+
+
+@pytest.fixture
+def live_pair():
+    # Documentation-only addresses and locally administered synthetic MACs.
+    router = Device(
+        ip="192.0.2.1", mac="02:00:5E:10:00:01", hostname="router-example", device_type="unknown"
+    )
+    phone = Device(
+        ip="192.0.2.20",
+        mac="02:00:5E:10:00:02",
+        hostname="phone-example",
+        device_type="phone",
+        automatic_device_type="phone",
+    )
+    local = Device(ip="192.0.2.30", hostname="workstation-docker-example", device_type="unknown")
+    unknown = Device(ip="192.0.2.40", mac="02:00:5E:10:00:04", state="new")
+    hostname_only = Device(ip="192.0.2.50", hostname="unidentified-example", state="new")
+    vanished = Device(ip="192.0.2.60", mac="02:00:5E:10:00:06", hostname="previous-example")
+    previous = snapshot(
+        1,
+        [router, phone.model_copy(update={"ip": "192.0.2.19"}), local, vanished],
+        network="192.0.2.0/24",
+    )
+    current = snapshot(2, [router, phone, local, unknown, hostname_only], network="192.0.2.0/24")
+    return current, previous
+
+
+def live_report(evidence):
+    provisional = next(
+        ref
+        for ref in evidence["current_devices"]
+        if evidence["facts"][ref]["identity_basis"] == "provisional_subnet_ip"
+    )
+    vanished = evidence["changes"]["vanished_devices"][0]
+    return {
+        "overview": "One previously observed device is absent from the latest scan.",
+        "notable_changes": [
+            {
+                "title": "Device absent",
+                "explanation": "A device was present before but was not seen in the latest scan.",
+                "confidence": "high",
+                "evidence": [vanished],
+            }
+        ],
+        "devices_to_verify": [
+            {
+                "reason": "Review this unreviewed device; its identity is provisional.",
+                "confidence": "medium",
+                "evidence": [provisional],
+            }
+        ],
+        "suggested_checks": [
+            {"check": "Confirm whether this device belongs to you.", "evidence": [provisional]}
+        ],
+        "evidence_summary": [
+            {"summary": "The recorded device is unreviewed.", "evidence": [provisional]}
+        ],
+    }
+
+
+def test_live_flat_mapping_is_deterministic_complete_and_explicit(live_pair):
+    first = build_evidence(*live_pair)
+    second = build_evidence(*(scan.model_copy(deep=True) for scan in live_pair))
+    flat = format_evidence(first)
+    assert flat == format_evidence(second)
+    lines = flat.splitlines()
+    assert len(lines) == len(first["facts"])
+    assert [line.split(": ", 1)[0] for line in lines] == list(first["facts"])
+    assert 'Trust: "unreviewed"' in flat
+    assert 'Automatic type: "unknown"' in flat
+    assert "Identity is provisional" in flat
+    for scan in live_pair:
+        for device in scan.devices:
+            assert not device.mac or device.mac not in flat
+    assert '"current_device":' not in flat
+
+
+def test_live_no_mac_and_unknown_devices_have_valid_citable_facts(live_pair, ollama):
+    evidence = build_evidence(*live_pair)
+    report = live_report(evidence)
+    calls, _ = ollama(report=report)
+    result = ai.analyze_scan(*live_pair)
+    assert not result.partial
+    target = evidence["facts"][report["devices_to_verify"][0]["evidence"][0]]
+    assert target["identity_basis"] == "provisional_subnet_ip"
+    assert result.report.devices_to_verify[0].identity == target["identity"]
+    assert len(calls) == 2
+    assert sent_evidence(calls[-1]) == format_evidence(evidence)
+
+
+def test_device_review_contract_does_not_require_model_generated_identity():
+    schema = AIReport.citation_schema(["E1", "E2"])
+    assert "identity" not in schema["$defs"]["DeviceToVerify"]["properties"]
+    report = valid_report()
+    report["devices_to_verify"][0]["identity"] = "invented-device"
+    with pytest.raises(ValidationError):
+        AIReport.model_validate(report)
+
+
+def test_live_vanished_and_ip_movement_references_resolve(live_pair):
+    evidence = build_evidence(*live_pair)
+    vanished = evidence["facts"][evidence["changes"]["vanished_devices"][0]]
+    assert vanished["current_device"] is None
+    assert vanished["previous_device"] in evidence["previous_devices"]
+    move = evidence["facts"][evidence["changes"]["ip_changes"][0]]
+    before, after = (
+        evidence["facts"][move["previous_device"]],
+        evidence["facts"][move["current_device"]],
+    )
+    assert before["identity"] == after["identity"]
+    assert before["device_label"] == after["device_label"]
+    assert before["ip"] != after["ip"]
+
+
+def test_live_retry_contains_exact_invalid_ids_and_can_correct_them(live_pair, ollama):
+    evidence = build_evidence(*live_pair)
+    first = live_report(evidence)
+    first["suggested_checks"][0]["evidence"] = ["E999"]
+    calls, _ = ollama(reports=[first, live_report(evidence)])
+    result = ai.analyze_scan(*live_pair)
+    assert result.retried and not result.partial
+    feedback = json.loads(calls[-1].content)["messages"][-1]["content"]
+    assert 'INVALID_EVIDENCE_IDS:\n["E999"]' in feedback
+    assert "You referenced IDs that do not exist." in feedback
+    assert "Replace or remove ONLY those references." in feedback
+    assert "Do not invent new evidence IDs." in feedback
+    assert "Return only IDs from the allowed list." in feedback
+    assert "\n".join(evidence["facts"]) in feedback
+    assert sent_evidence(calls[1]) == sent_evidence(calls[2])
+
+
+def test_live_retry_can_remove_unsupported_item_without_repeating_its_overview(live_pair, ollama):
+    evidence = build_evidence(*live_pair)
+    first = live_report(evidence)
+    first["overview"] = "UNSUPPORTED_OVERVIEW_CLAIM"
+    first["suggested_checks"][0]["evidence"] = ["E999"]
+    second = live_report(evidence)
+    second["overview"] = first["overview"]
+    second["suggested_checks"] = []
+    ollama(reports=[first, second])
+    result = ai.analyze_scan(*live_pair)
+    assert result.report.notable_changes and not result.report.suggested_checks
+    assert "UNSUPPORTED_OVERVIEW_CLAIM" not in result.report.overview
+
+
+def test_live_valid_parts_survive_repeated_invalid_citations(live_pair, ollama):
+    report = live_report(build_evidence(*live_pair))
+    report["suggested_checks"][0]["evidence"] = ["E999"]
+    ollama(report=report)
+    result = ai.analyze_scan(*live_pair)
+    assert result.partial and result.report.notable_changes
+    assert result.report.devices_to_verify and result.report.evidence_summary
+    assert not result.report.suggested_checks
+
+
+def test_live_all_invalid_result_still_fails_closed(live_pair, ollama):
+    report = live_report(build_evidence(*live_pair))
+    for section in ("notable_changes", "devices_to_verify", "suggested_checks", "evidence_summary"):
+        for item in report[section]:
+            item["evidence"] = ["E999"]
+    calls, _ = ollama(report=report)
+    with pytest.raises(ai.AIGroundingError):
+        ai.analyze_scan(*live_pair)
+    assert len(calls) == 3
+
+
+def test_live_ambiguous_device_review_is_removed_while_other_items_survive(live_pair, ollama):
+    evidence = build_evidence(*live_pair)
+    report = live_report(evidence)
+    report["devices_to_verify"][0]["evidence"] = evidence["current_devices"][:2]
+    ollama(report=report)
+    result = ai.analyze_scan(*live_pair)
+    assert result.partial and not result.report.devices_to_verify
+    assert result.report.notable_changes and result.report.evidence_summary
+
+
+def test_safe_diagnostics_never_expose_underlying_values(live_pair):
+    evidence = build_evidence(*live_pair)
+    report = live_report(evidence)
+    report["suggested_checks"][0]["evidence"] = ["E999", "192.0.2.1", "router-example"]
+    diagnostic = safe_diagnostics(evidence, AIReport.model_validate(report))
+    output = json.dumps(diagnostic)
+    assert diagnostic["Evidence facts"] == len(evidence["facts"])
+    assert diagnostic["Allowed IDs"] == list(evidence["facts"])
+    assert diagnostic["Invalid citations"] == ["<redacted non-ID>", "E999"]
+    assert diagnostic["Device count"] == 5
+    assert diagnostic["Provisional identities"] == 2
+    assert diagnostic["Unknown classifications"] == 4
+    for scan in live_pair:
+        for device in scan.devices:
+            for value in (device.ip, device.mac, device.hostname, device.friendly_name):
+                assert not value or value not in output
+
+
+def test_live_trust_metadata_and_historical_only_records_are_not_confused(live_pair):
+    current, previous = live_pair
+    current.devices[0] = current.devices[0].model_copy(update={"trust_status": "trusted"})
+    previous.vanished = [Device(ip="198.51.100.99", hostname="outside-two-scans")]
+    evidence = build_evidence(current, previous)
+    assert evidence["changes"]["metadata_changes"]
+    flat = format_evidence(evidence)
+    assert 'Trust: "trusted"' in flat and 'Trust: "unreviewed"' in flat
+    assert "outside-two-scans" not in flat
+
+
+def test_review_cannot_claim_another_device_label_from_uncited_facts(live_pair, ollama):
+    report = live_report(build_evidence(*live_pair))
+    report["devices_to_verify"][0]["reason"] = "Device B requires review."
+    ollama(report=report)
+    result = ai.analyze_scan(*live_pair)
+    assert result.partial and not result.report.devices_to_verify
+    assert result.report.notable_changes

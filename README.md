@@ -42,11 +42,12 @@ Demo never touches live history.
 Network inventories contain private names, addresses, vendors, and household
 equipment. Evidence stays on the machine running SpecterLAN.
 [Ollama](https://github.com/ollama/ollama) is the open-source inference runtime;
-the default is **Gemma 4 E4B** (`gemma4:e4b`), a local open-weight model designed
-for edge deployment. Its [model license terms](https://ai.google.dev/gemma/docs/core/model_card_4)
+the default is **Gemma 3 4B** (`gemma3:4b`), a local open-weight model chosen
+for broader local hardware compatibility. Its [model terms](https://ai.google.dev/gemma/terms)
 are separate from SpecterLAN's MIT license.
 
-Users can swap compatible installed local models. No hosted AI provider, API key,
+Users can select `gemma4:e4b` or another compatible installed local Ollama model;
+all inference remains local. No hosted AI provider, API key,
 or paid API account is required. Prompts and evidence validation are inspectable,
 and the project stays useful without dependence on one API vendor.
 Scanning/history work without AI.
@@ -97,15 +98,22 @@ starting Streamlit. Re-running setup updates Python dependencies in the existing
 ### First run
 
 **Local setup and status** reports local storage, Python compatibility, Ollama,
-the default `gemma4:e4b` model, and Nmap. A compatible selected model is checked
-separately when overriding the default.
+the default `gemma3:4b` model, and Nmap. SpecterLAN automatically detects installed
+local Ollama models. Choose another installed model from **Local AI model** in
+the sidebar; arbitrary remote or invalid model names cannot be entered in the UI.
+The preferred default is `gemma3:4b`, while a saved installed selection is preserved.
+If that selection disappears, SpecterLAN prefers `gemma3:4b`, then the first suitable
+installed model. Missing defaults are clearly identified. Without a suitable
+installed model, Ask the Ghost is disabled; scanning and history still work.
+Automatic fallbacks are not saved as user overrides. If the default becomes
+available later, it is preferred unless you explicitly chose another valid model.
 
 - **Storage problem:** Live mode stops with a permissions/free-space message.
   Demo Séance can still use its separate writable temporary storage.
 - **Ollama unavailable or selected model missing:** scanning and history remain
   usable; Ask the Ghost is disabled with setup instructions. Ollama is needed
   only for Ask the Ghost. After installing and opening Ollama, run
-  `ollama pull gemma4:e4b`, then refresh the page after 15 seconds.
+  `ollama pull gemma3:4b`, then refresh the page after 15 seconds.
 - **Nmap missing:** fallback discovery remains available. Nmap is recommended
   for richer observations, not mandatory.
 - **No live network:** select Demo Séance for simulated evidence without discovery.
@@ -145,9 +153,9 @@ installer EXE has been added.
 Install and open Ollama, then run:
 
 ```powershell
-ollama pull gemma4:e4b
+ollama pull gemma3:4b
 ollama list
-ollama run gemma4:e4b "Reply with one short sentence."
+ollama run gemma3:4b "Reply with one short sentence."
 ```
 
 If needed, launch the Ollama app or use `ollama serve` in another terminal.
@@ -158,12 +166,18 @@ before recording; SpecterLAN never downloads it. See the
 Optional settings in the terminal used to launch SpecterLAN:
 
 ```powershell
-$env:OLLAMA_MODEL="gemma4:e4b"
-$env:OLLAMA_URL="http://localhost:11434"
+$env:OLLAMA_URL="http://127.0.0.1:11434"
 $env:OLLAMA_NUM_CTX="16384"
 ```
 
-The sidebar can override the model. `.env.example` is a reference;
+The dropdown supports `gemma4:e4b` after you explicitly run
+`ollama pull gemma4:e4b`. SpecterLAN never downloads models automatically.
+Valid selections are saved on this device. Discovery results refresh on a page
+reload or rerun after the 15-second cache expires. Cloud and unverifiable models,
+and models reported without chat capability, are excluded. All inference remains local.
+`OLLAMA_MODEL` remains a model override for the Python analysis API; the UI uses
+only its detected-model dropdown and saved selection.
+`.env.example` is a reference;
 **.env files are not automatically loaded**. Only loopback endpoints and locally
 identifiable GGUF models are accepted; cloud/remote models are refused.
 For server-side isolation, set `OLLAMA_NO_CLOUD=1` in Ollama's environment and
@@ -183,13 +197,17 @@ firewalls, and isolation can cause missed hosts.
 
 ## Live Network
 
-Live is the default. Check the sidebar IP/subnet, then **Scan for apparitions**.
+Live is the default. Select **Scan network** to find connected devices.
+Open **Technical details** to check the network boundary and discovery method.
 Broad interfaces are capped to the containing /24; public targets, unrelated
 subnets, IPv6, and larger scans are refused.
 
-The table shows names, presence, IP, hostname, MAC, vendor, type, and trust.
-**Edit a device** exposes labels and classification reasons. User types win over
-automatic suggestions. Trusted/unreviewed/ignored are inventory labels, not
+The main table shows Device, Status, Type, Trust, and IP address. Names fall back
+to the hostname or **Unknown device**, never a blank cell. Status labels are New,
+Known, Offline, and Returned; trust labels are Trusted, Need review, and Ignored.
+**Technical details** retains MAC addresses, hostnames, vendors, and automatic
+classification reasons. **Edit a device** lets you name and review devices.
+User types win over automatic suggestions. Trust labels are inventory labels, not
 access controls; ignored devices stay visible.
 
 **What changed since the last scan?** compares snapshots of the same subnet.
@@ -210,9 +228,10 @@ Live data uses the OS local application-data directory automatically:
 `~/Library/Application Support/SpecterLAN/specterlan.db` on macOS, or
 `${XDG_DATA_HOME:-~/.local/share}/SpecterLAN/specterlan.db` on Linux.
 The database holds scan history, friendly names, trust labels, classification
-overrides, and the selected local model preference. `OLLAMA_MODEL` overrides the
-saved preference at startup; the sidebar can still select another compatible
-local model. No OS username, password, email, or account ID is requested or stored.
+overrides, and the selected local model preference. The sidebar preserves a saved
+selection only while it is installed and suitable. Missing or unsuitable preferences
+are cleared after successful discovery; an Ollama outage preserves the saved choice.
+No OS username, password, email, or account ID is requested or stored.
 
 If the new database is absent, startup imports `.specterlan.db` from the working
 directory using a SQLite backup, leaving the original intact. An existing new
@@ -269,7 +288,16 @@ saved scans of this subnet are supplied. The report shows overview, notable
 changes, devices to verify, suggested manual checks, and evidence. The actual
 returned model and snapshot IDs are visible.
 
-Strict JSON validation and evidence checks reject malformed/unsupported reports.
+Strict JSON validation and evidence checks reject unsupported content. Short
+`E1`, `E2`, … citations are constrained to the supplied evidence IDs. One local
+correction retry can repair invalid references; if only part of a response passes
+the checks, SpecterLAN shows that part with a notice. It never invents supporting
+evidence or accepts unknown IDs. If too little is grounded, a specific verification
+message appears while scan data stays unchanged.
+The model reads a flat, labeled evidence list. Device reviews cite saved observations;
+SpecterLAN resolves their identities locally, including provisional/no-MAC devices.
+An unsupported observation is omitted while independently grounded findings remain
+visible. Local developer diagnostics expose only counts and citation IDs.
 Offline Ollama, missing models, timeouts, or invalid output leave scanning/history
 available. Confidence describes evidence support, not risk. Models can still
 misinterpret valid citations; check the facts. Oversized evidence fails clearly

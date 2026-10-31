@@ -100,6 +100,10 @@ class SnapshotStore:
             ).fetchone()
         return row[0] if row else None
 
+    def clear_model_preference(self) -> None:
+        with self._connect() as con:
+            con.execute("DELETE FROM app_preferences WHERE key = 'ollama_model'")
+
     def save_model_preference(self, model: str) -> None:
         with self._connect() as con:
             con.execute(

@@ -23,10 +23,11 @@ inspectable, though a model can still misinterpret the evidence.
 ## Open AI components and why open innovation mattered
 
 [Ollama](https://github.com/ollama/ollama) provides the open-source local runtime.
-The default is **Gemma 4 E4B** (`gemma4:e4b`), a local open-weight model designed
-for edge deployment. Its [model license terms](https://ai.google.dev/gemma/docs/core/model_card_4)
+The default is **Gemma 3 4B** (`gemma3:4b`), a local open-weight model chosen
+for broader local hardware compatibility. Its [model terms](https://ai.google.dev/gemma/terms)
 are separate from SpecterLAN's MIT license.
-Users can swap in compatible locally installed models.
+Users can select `gemma4:e4b` or another compatible locally installed Ollama model.
+All inference remains local.
 
 Network inventory stays local. No hosted AI provider or cloud API key is required,
 and scanning and history still work without an AI model. Initial software and

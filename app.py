@@ -10,28 +10,23 @@ from typing import get_args
 import streamlit as st
 
 from specterlan.ai_ui import render_ai
+from specterlan.changes import compare_scans
 from specterlan.demo import DEMO_LOCAL_IP, DEMO_NETWORK, DEMO_STAGES, DemoSession
 from specterlan.history_ui import render_history
 from specterlan.models import DeviceMetadata, DeviceType, ScanResult, TrustStatus
 from specterlan.network import detect_local_network, discover
-from specterlan.readiness import supported_python, writable_storage
-from specterlan.readiness_ui import render_readiness
+from specterlan.readiness import DEFAULT_OLLAMA_URL, supported_python, writable_storage
+from specterlan.readiness_ui import render_model_selector, render_readiness
 from specterlan.store import SnapshotStore, device_identity
 from specterlan.ui import (
     apply_style,
+    device_name,
     render_device_table,
     render_footer,
     render_overview,
+    render_technical_devices,
     show_ui_error,
 )
-
-
-def save_model_preference(store: SnapshotStore) -> None:
-    try:
-        store.save_model_preference(st.session_state.local_model_preference)
-    except (OSError, sqlite3.Error):
-        st.error("Could not save the local model preference. Check local history access.")
-
 
 st.set_page_config(
     page_title="SpecterLAN",
@@ -41,7 +36,7 @@ st.set_page_config(
 
 apply_style()
 st.title("👻 SpecterLAN")
-st.caption("Find the ghosts on your network. Local discovery + local AI.")
+st.caption("Find the ghosts on your network.")
 
 if "scan_result" not in st.session_state:
     st.session_state.scan_result = None
@@ -75,11 +70,11 @@ if mode == "Demo Séance":
     store = demo.store
     local_ip, network = DEMO_LOCAL_IP, DEMO_NETWORK
     view_key = f"demo:{demo.generation}"
-    initial_model = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
+    saved_model = None
 else:
     try:
         store = SnapshotStore()
-        initial_model = os.getenv("OLLAMA_MODEL", store.model_preference() or "gemma4:e4b")
+        saved_model = store.model_preference()
     except (OSError, sqlite3.Error, RuntimeError, ValueError):
         # Filesystem exceptions can contain account names in absolute paths.
         st.error(
@@ -93,23 +88,19 @@ else:
 
 storage_ready = writable_storage(store.path)
 with st.sidebar:
-    if mode == "Live Network":
-        model = st.text_input(
-            "Ollama model",
-            value=initial_model,
-            key="local_model_preference",
-            on_change=save_model_preference,
-            args=(store,),
-        )
-    else:
-        model = st.text_input("Ollama model", value=initial_model)
+    model, inventory = render_model_selector(
+        store,
+        saved_model,
+        os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_URL),
+        demo=mode == "Demo Séance",
+    )
     st.caption("Your SpecterLAN data is stored locally on this device.")
 readiness_area = st.container()
 with readiness_area:
     readiness = render_readiness(
         storage_ready,
         model,
-        os.getenv("OLLAMA_URL", "http://localhost:11434"),
+        inventory,
         demo=mode == "Demo Séance",
     )
 if not storage_ready:
@@ -134,30 +125,16 @@ if st.session_state.scan_result is not None and st.session_state.scan_result.net
     st.session_state.scan_result = None
     st.session_state.ai_report = None
 
-with st.sidebar:
-    st.subheader("Scan boundary")
-    st.text_input("Local IP", value=local_ip, disabled=True)
-    st.text_input("Target subnet", value=network, disabled=True)
-    if mode == "Live Network":
-        st.caption("SpecterLAN scans only the private subnet containing this computer.")
-        st.caption("MVP discovery does not perform a port scan.")
-        if shutil.which("nmap") is None:
-            st.info(
-                "Nmap unavailable. Scans use ping + the local neighbor table; Nmap is optional."
-            )
-    else:
-        st.caption("Fixed simulated subnet. No network detection or discovery is performed.")
-
 header_area = st.empty()
 with header_area.container():
     render_overview(mode, network, st.session_state.scan_result)
 scan_status = None
 
 if mode == "Live Network":
-    if st.button("Scan for apparitions", type="primary", use_container_width=True):
+    if st.button("Scan network", type="primary", use_container_width=True):
         with header_area.container():
             render_overview(
-                mode, network, st.session_state.scan_result, status="Scanning private subnet…"
+                mode, network, st.session_state.scan_result, status="Looking for connected devices…"
             )
         with st.spinner("Listening for devices on the local network..."):
             try:
@@ -231,18 +208,26 @@ if result:
     with header_area.container():
         render_overview(mode, network, result, status=scan_status)
 
-    st.subheader("Network presence")
-    st.caption(
-        "Presence: new · known · vanished. Trust: trusted · unreviewed · ignored. "
-        "Labels describe observations and your inventory, not security verdicts."
-    )
-    render_device_table(result.devices)
+    st.subheader("Your devices")
+    st.caption("Need review means you haven't identified the device yet. It does not mean unsafe.")
+    returned_ips = set()
+    try:
+        current, previous = store.latest_scan_pair(network)
+        if current is not None:
+            returned_ips = {
+                change.device.ip
+                for change in compare_scans(current, previous)
+                if change.kind == "returned"
+            }
+    except (sqlite3.Error, ValueError):
+        pass  # History/AI sections report unavailable saved evidence independently.
+    render_device_table(result.devices, returned_ips)
     if not result.devices:
         st.info(
             "No devices responded in this snapshot. Sleeping or filtered devices may be missed."
         )
     if result.vanished:
-        with st.expander(f"Vanished since the previous scan ({len(result.vanished)})"):
+        with st.expander(f"Offline since last scan ({len(result.vanished)})"):
             render_device_table(result.vanished)
 
     editable = {
@@ -255,28 +240,25 @@ if result:
                 "Device",
                 options=list(editable),
                 key=None if mode == "Live Network" else f"device_selector:{view_key}",
-                format_func=lambda key: (
-                    f"{editable[key].friendly_name or editable[key].hostname or editable[key].ip}"
-                    f" | {editable[key].ip} | {editable[key].mac or 'no MAC'}"
-                    f" | {editable[key].state}"
-                ),
+                format_func=lambda key: f"{device_name(editable[key])} | {editable[key].ip}",
             )
             selected = editable[identity]
-            st.caption(
-                f"Automatic suggestion: {selected.automatic_device_type}. "
-                f"{selected.classification_reason} "
-                "A saved device type takes precedence over this suggestion."
-            )
+            with st.expander("Technical details"):
+                st.caption(
+                    f"Automatic suggestion: {selected.automatic_device_type}. "
+                    f"{selected.classification_reason} "
+                    "A saved device type takes precedence over this suggestion."
+                )
+                if identity.startswith("ip:"):
+                    st.warning(
+                        "No usable MAC is visible. Metadata applies only to this subnet and IP. "
+                        "Another device could reuse the address. Verify identity before trusting; "
+                        "metadata will not follow an IP change or transfer to a MAC identity."
+                    )
             st.caption(
                 "Trust is your inventory label; it does not allow or block network access. "
                 "Ignored devices remain visible and are still scanned."
             )
-            if identity.startswith("ip:"):
-                st.warning(
-                    "No usable MAC is visible. Metadata applies only to this subnet and IP. "
-                    "Another device could reuse the address. Verify identity before trusting; "
-                    "metadata will not follow an IP change or transfer to a MAC identity."
-                )
             with st.form(
                 f"edit:{identity}" if mode == "Live Network" else f"edit:{view_key}:{identity}"
             ):
@@ -292,6 +274,11 @@ if result:
                     "Trust status",
                     options=trust_statuses,
                     index=trust_statuses.index(selected.trust_status),
+                    format_func=lambda value: {
+                        "trusted": "Trusted",
+                        "unreviewed": "Need review",
+                        "ignored": "Ignored",
+                    }[value],
                 )
                 if st.form_submit_button("Save device"):
                     try:
@@ -319,9 +306,20 @@ else:
     if mode == "Demo Séance":
         st.info("No scan yet. Start Demo for the baseline, then use Next Scan to reveal changes.")
     else:
-        st.info(
-            "No scan this session. Scan for apparitions to refresh presence, or inspect saved history below."
-        )
+        st.info("No scan yet. Scan your network to see which devices are currently connected.")
+
+with st.expander("Technical details"):
+    st.text(f"Local IP: {local_ip}\nNetwork/subnet: {network}")
+    st.caption(
+        "Nmap available"
+        if shutil.which("nmap")
+        else "Nmap unavailable. Fallback: ping + the local neighbor table."
+    )
+    st.caption(f"Discovery method: {result.scanner if result else 'No scan yet'}")
+    if mode == "Demo Séance":
+        st.caption("Simulated observations only. No live network discovery.")
+    if result:
+        render_technical_devices([*result.devices, *result.vanished])
 
 render_history(store, network, key_prefix=view_key)
 render_ai(store, network, model, key_prefix=view_key, available=readiness.selected_model_ready)

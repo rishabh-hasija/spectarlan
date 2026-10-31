@@ -26,15 +26,18 @@ The UI's **Local setup and status** section reports:
 - Python: unsupported versions stop with instructions to recreate the environment.
 - Ollama: ready/unavailable, determined through the loopback API rather than
   requiring an `ollama` executable on PATH.
-- Model: `gemma4:e4b` ready/missing. A selected override is checked independently,
-  so a missing default model never disables another ready local model.
+- Models: distinguishes an unavailable Ollama server, an available server with
+  no installed models, an installed default `gemma3:4b`, a missing default with
+  other installed models, and a ready selected local model.
 - Nmap: available/fallback mode, based on PATH discovery. No startup scan runs.
 
 Readiness requests contain only model names, never network evidence. They use the
 same loopback endpoint validation as analysis, disable environment proxies and
 redirects, and use two-second HTTP timeouts. `/api/tags` lists models; `/api/show`
-checks local GGUF metadata and rejects remote/unverifiable models. Results are
-cached for 15 seconds per model/endpoint and rechecked on a subsequent rerun or
+checks local GGUF metadata and rejects remote/unverifiable models. Embedding-only
+models are excluded when reported capabilities do not include completion. Older
+local GGUF models without capabilities metadata retain the existing compatibility
+checks. Results are cached for 15 seconds per endpoint and rechecked on a subsequent rerun or
 page refresh. No model is pulled or loaded for generation during these checks.
 
 Unavailable Ollama or a selected model disables the analysis button while keeping
@@ -47,6 +50,42 @@ symbolic Windows app-data path, never account names or diagnostic filesystem pat
 Executable packaging remains future work: browser assets, dependency metadata,
 configuration and subprocess behavior need validation in a frozen Windows build.
 This milestone distributes scripts and source, without a bundler or installer EXE.
+
+## Presentation and local AI failures
+
+The main screen uses a native Streamlit title, four summary cards (Devices online,
+New devices, Need review, Offline since last scan), and a compact device table.
+Friendly names fall back to a hostname or "Unknown device". New, Known, Offline,
+and Returned are display labels; underlying snapshot states and trust values are
+unchanged. Returned is derived from saved comparisons, not written into history.
+Demo Séance uses the same presentation with its unchanged simulated fixtures.
+
+The sidebar keeps mode, model selection, and the local-data privacy message.
+Local IP, subnet, discovery method, Nmap details, MAC addresses, hostnames, vendors,
+and classification reasons remain available in collapsed **Technical details**.
+Saved observations and AI citations remain inspectable in history and **Evidence
+used**. Local setup stays collapsed unless storage has a problem.
+
+Ask the Ghost appears below scanning and history. Failures show "Ask the Ghost
+couldn't get a response from the local AI." and an Ollama/model check suggestion.
+HTTP codes and validation diagnostics appear only in collapsed Technical details
+and the local server console. Scan history and scanning remain independent.
+
+An HTTP 500 alone does not establish a request/schema incompatibility. The
+investigated Ollama server log recorded model-loading failure while allocating
+a CUDA host-memory buffer. Direct `gemma4:e4b` simple chat succeeded, and the
+unchanged full structured request with simulated Demo evidence also succeeded
+and passed evidence validation using the normal 180-second timeout. A shorter
+90-second diagnostic request timed out. The investigation did not change the
+request, prompt, schema, inference options, or timeout default. The application
+now defaults to `gemma3:4b` for broader local hardware compatibility;
+`gemma4:e4b` remains available as an explicit local override.
+
+If this recurs, check Ollama's local server log for model-loading errors and
+available memory. Freeing memory or explicitly choosing a smaller compatible local
+model may help; SpecterLAN never silently switches models or uses cloud AI.
+Successful metadata readiness does not guarantee that a model can load or respond
+within the timeout.
 
 ## Local storage and privacy
 
@@ -65,9 +104,26 @@ are no SpecterLAN user profiles.
 
 Live history, device metadata, friendly names, trust labels, classification
 overrides, and the selected Ollama model preference stay in this local database.
-At startup, `OLLAMA_MODEL` takes precedence over the saved model preference, then
-the default applies. Sidebar selections are saved locally; model compatibility
-and loopback-only Ollama checks still apply at analysis time.
+The sidebar uses **Local AI model**, a selectbox with only suitable models returned
+by Ollama. Its default endpoint is `http://127.0.0.1:11434/api/tags`; configured
+Ollama endpoints must still pass the existing loopback-only validation. No arbitrary
+model names, cloud models, or remote URLs can be added through the UI.
+
+Selection priority is a still-valid current choice, a valid saved choice,
+`gemma3:4b` when available, then the first suitable installed model in API order.
+Only explicit selections become user preferences; an automatic fallback does
+not override the default when it later becomes available.
+An unavailable saved model is never inserted into the dropdown. Missing or unsuitable
+preferences are cleared after successful discovery; an unavailable server does
+not discard a saved choice. If no suitable models are available, the dropdown and
+Ask the Ghost are disabled, while scanning and history remain usable.
+
+When the default is absent, the sidebar says "Default model gemma3:4b is not
+installed." and "Run: ollama pull gemma3:4b". When Ollama is unavailable it says
+"Ollama is not running. Network scanning still works." Model downloads remain
+explicit user actions. A live selection is rechecked against a fresh local listing
+before it is written to the existing preferences table. Demo choices are session-only
+and never access Live preferences. No database schema changes are required.
 
 On first startup without the new database, a legacy `.specterlan.db` in the
 working directory is copied with SQLite's backup API, including committed WAL
@@ -202,8 +258,11 @@ No complete audit trail of edits between scans is recorded.
 ## Local Ollama evidence analysis
 
 Open **Ask the Ghost** and select **Analyze with Ollama**. Analysis runs only
-through Ollama on this computer. The selected model defaults to `gemma4:e4b`;
-the sidebar or `OLLAMA_MODEL` can override it. The report shows the model
+through Ollama on this computer. The selected model defaults to `gemma3:4b` for
+broader local hardware compatibility. The dropdown can select `gemma4:e4b` or
+another suitable installed local Ollama model and preserves valid saved choices.
+`OLLAMA_MODEL` still configures direct Python API calls; it cannot inject a model
+name into the UI. All inference remains local. The report shows the model
 actually returned by Ollama and the IDs of the two analyzed scans.
 
 Only the latest saved scan and immediately preceding saved scan of the current
@@ -212,7 +271,21 @@ state can identify a new device even on the first scan; without a previous scan,
 there is no evidence for vanished, returning, IP, classification, or metadata
 changes. Run another scan after editing labels to include those edits in analysis.
 
-The payload contains a fact catalog with stable IDs for the request:
+The payload contains a fact catalog with short, deterministic IDs for the request:
+`E1`, `E2`, `E3`, and so on. Allocation follows current scan/device order,
+previous scan/device order, then deterministic change order. Identical supplied
+snapshots produce the same mapping. These are request-local citations, not durable
+device identities; MAC-based identity and stored snapshots are unchanged.
+Scan/device facts retain their current/previous role, and change facts link to
+their before/after device facts using those same IDs.
+The model receives a flat `AVAILABLE EVIDENCE` list, with exactly one
+`E#: observation` line per fact. It does not need to navigate nested JSON to find
+an ID. Request-local Device A/Device B labels follow recorded identity across the
+two snapshots. Provisional address-based identities remain explicitly provisional.
+Recorded trust, effective/automatic type, override, hostname and vendor are shown
+when available; absent legacy fields remain "not recorded". Raw MAC strings and
+internal identity keys are not needed in the model prompt. The full saved-fact
+catalog remains available locally for validation and the Evidence used view.
 
 - Current and previous scan IDs, timestamps, subnet, scanner, and online counts.
 - Current and previous device observations: identity, IP, MAC visibility and
@@ -228,9 +301,9 @@ The strict JSON response schema has five required sections:
 
 | Section | Contents |
 | --- | --- |
-| `overview` | Short interpretation with a supplied fact-ID citation |
+| `overview` | Short interpretation supported by the structured sections; inline citations optional |
 | `notable_changes` | Title, explanation, evidence IDs, confidence |
-| `devices_to_verify` | Identity or IP, reason, evidence IDs, confidence |
+| `devices_to_verify` | Reason, evidence IDs for one device, confidence; display identity resolved locally |
 | `suggested_checks` | A manual check and its supporting evidence IDs |
 | `evidence_summary` | A short summary and supporting evidence IDs |
 
@@ -244,6 +317,58 @@ Device-supplied strings are treated as untrusted data, never instructions.
 Ollama receives the JSON schema through its structured-output API. The client
 then validates the schema, checks fact references and cited device identities,
 rejects addresses absent from evidence, and rejects prohibited security labels.
+The prompt prominently lists `AVAILABLE_EVIDENCE_IDS` and instructs the model to
+use only those IDs. Each citation array's item schema also enumerates the allowed
+IDs. Client-side membership validation still runs independently, even if a model
+returns schema-shaped JSON containing an invented or descriptive reference.
+
+A citation error triggers at most one correction request to the same local model,
+using the same snapshots, fact catalog, schema, inference options, and endpoint.
+The model sees its previous response and the valid ID list, with instructions to
+correct only invalid citations and omit claims it cannot support. No extra scans
+or private facts are loaded. Repair is skipped if it would exceed the existing
+context byte budget; evidence is never truncated to make it fit.
+Correction feedback includes the exact invalid references in `INVALID_EVIDENCE_IDS`
+alongside all allowed IDs. If the issue is device/prose consistency rather than
+an unknown citation, that list is empty and the instruction is to omit unsupported
+items. The same single retry limit applies.
+
+An item with any unavailable citation is rejected in full, including when another
+citation on that item is valid. Unsupported references are never guessed, remapped,
+or removed to make the remaining references appear sufficient. If correction fails,
+safe first-response items are preserved; when the first response has no safe items,
+independently valid corrected items can be retained. The UI warns when items were
+omitted. An overview that may depend on omitted items is replaced by a neutral
+display notice, not a claim about network evidence. A plain overview is accepted
+only with grounded structured support; explicit invalid prose citations are rejected.
+
+The original wire schema remains strict, including a required nonempty evidence
+summary. A separate validated display subset permits an empty summary after its
+items are rejected, but must retain at least one supporting item in another section.
+Safety, address, and cited-device checks still apply to displayed content. These
+checks establish citation/identity consistency, not the truth of every model claim.
+The model no longer generates a free-form device `identity`. A device review must
+cite observations or changes identifying exactly one recorded device; the client
+derives its identity from those facts. A scan-only or ambiguous review is rejected.
+IP addresses and Device A/B labels in an item must belong to its cited supporting
+facts. Failed identity/label, address, or safety checks reject that item rather than
+raising before partial-response handling. Even a repaired report uses the neutral
+overview so an unsupported earlier overview cannot survive an omitted item.
+
+The remaining Live failure was reproduced with valid citation IDs: generated device
+identity strings did not match the cited records. Previously that check raised
+before repair/partial handling, and the UI misleadingly described every grounding
+failure as a missing citation. Live and Demo share evidence generation; Live can
+contain more unknown, unreviewed, provisional, and historical device variants than
+the curated Demo. Anonymized fixtures exercise those shapes without storing real
+network values in tests.
+
+For local developer diagnostics, call `safe_diagnostics(evidence, report)` from
+`specterlan.evidence`. It returns only fact/device counts, allowed IDs, change
+category counts, provisional/unknown counts, and returned/invalid citation IDs.
+Non-ID strings are redacted, since a mistaken citation may itself contain an IP
+or hostname. Never print `evidence`, `format_evidence(evidence)`, model responses,
+or raw exceptions while diagnosing real scans.
 The UI displays cited facts and the submitted evidence for review. These checks
 do not prove the truth of every generated sentence: a model may misinterpret a
 valid citation. Treat the output as an interpretation and verify it against the
@@ -259,12 +384,17 @@ local Ollama installation; SpecterLAN cannot attest the server's internals.
 For additional server-side isolation, configure Ollama with `OLLAMA_NO_CLOUD=1`
 and restart Ollama; see the [Ollama local-only FAQ](https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features).
 
-Missing model, connection failure, timeout, invalid JSON/schema, and unsupported
-evidence produce a local error message. Failed output is not shown and does not
-affect scans or history. No model is automatically downloaded, no cloud fallback
+Missing model, connection failure, timeout, and invalid JSON/schema remain distinct
+from grounding failure. If neither attempt yields enough grounded content, the UI
+says "Ask the Ghost couldn't verify enough of the AI response against the saved
+network evidence." and "Your scan data is unchanged. Try the analysis again."
+Technical details use a static explanation without raw payload/model-output contents.
+Unsupported output is not displayed and does not affect scans or history.
+No model is automatically downloaded, no cloud fallback
 is attempted, and the application does not execute suggested checks.
 
-The default request timeout is 180 seconds. The request uses a 16,384-token
+The default timeout remains 180 seconds per request; one correction attempt may
+add another request's latency. The request uses a 16,384-token
 context and a conservative input byte budget with output space reserved.
 Oversized evidence fails clearly instead of silently dropping devices.
 `OLLAMA_NUM_CTX` can increase the context if the local model and memory support

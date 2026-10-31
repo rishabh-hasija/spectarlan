@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DeviceType = Literal[
     "router",
@@ -78,10 +78,13 @@ class NotableChange(AIOutput):
 
 
 class DeviceToVerify(AIOutput):
-    identity: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     evidence: list[str] = Field(min_length=1)
     confidence: Literal["low", "medium", "high"]
+
+
+class GroundedDeviceToVerify(DeviceToVerify):
+    identity: str = Field(min_length=1)
 
 
 class SuggestedCheck(AIOutput):
@@ -100,3 +103,33 @@ class AIReport(AIOutput):
     devices_to_verify: list[DeviceToVerify]
     suggested_checks: list[SuggestedCheck]
     evidence_summary: list[EvidenceSummary] = Field(min_length=1)
+
+    @classmethod
+    def citation_schema(cls, evidence_ids: list[str]) -> dict:
+        """Constrain generation without replacing independent client-side grounding checks."""
+        schema = cls.model_json_schema()
+        for definition in schema.get("$defs", {}).values():
+            citation = definition.get("properties", {}).get("evidence")
+            if citation is not None:
+                citation["items"]["enum"] = list(evidence_ids)
+        return schema
+
+
+class GroundedReport(AIReport):
+    """Display only retained validated items, including when all summary items were rejected."""
+
+    evidence_summary: list[EvidenceSummary]
+    devices_to_verify: list[GroundedDeviceToVerify]
+
+    @model_validator(mode="after")
+    def require_support(self) -> GroundedReport:
+        if not any(
+            (
+                self.notable_changes,
+                self.devices_to_verify,
+                self.suggested_checks,
+                self.evidence_summary,
+            )
+        ):
+            raise ValueError("A displayed report requires at least one grounded supporting item.")
+        return self

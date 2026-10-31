@@ -35,7 +35,7 @@ result; automated tests are not a substitute for a live scan/model rehearsal.
 - [ ] Without Nmap, status shows fallback mode and existing fallback discovery still works.
 - [ ] Unwritable live data shows a clear blocking error; Demo remains separately selectable.
 - [ ] Startup checks never invoke discovery, generate AI output, or download model weights.
-- [ ] `ollama list` includes `gemma4:e4b` (or the configured local model).
+- [ ] `ollama list` includes default `gemma3:4b` (or a configured local model such as `gemma4:e4b`).
 - [ ] Model is warmed and a real Ask the Ghost request succeeds.
 - [ ] Live scan on an owned/administered network succeeds; verify sidebar subnet.
 - [ ] Nmap host discovery works where installed; fallback works when unavailable.

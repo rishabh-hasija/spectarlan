@@ -22,7 +22,7 @@ from specterlan.demo import (
 )
 from specterlan.evidence import build_evidence
 from specterlan.models import DeviceMetadata, ScanResult
-from specterlan.readiness import AIReadiness
+from specterlan.readiness import ModelInventory
 from specterlan.store import SnapshotStore
 
 
@@ -200,7 +200,7 @@ def test_shared_ai_evidence_contains_simulated_changes_and_only_two_scans(demo):
     assert esp["automatic_device_type"] == "unknown"
     assert esp["trust_status"] == "unreviewed"
     assert esp["mac_present"] is True
-    assert "simulated" in evidence["facts"]["current.scan"]["scanner"]
+    assert "simulated" in evidence["facts"][evidence["current_scan"]]["scanner"]
     demo.advance()
     current, previous = demo.store.latest_scan_pair(DEMO_NETWORK)
     evidence = build_evidence(current, previous)
@@ -226,7 +226,11 @@ def button(ui, label):
 @pytest.fixture
 def demo_app(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        readiness_ui, "cached_ai_readiness", lambda *args: AIReadiness(True, True, True)
+        readiness_ui,
+        "cached_model_inventory",
+        lambda *args: ModelInventory(
+            True, ("gemma3:4b", "gemma4:e4b"), ("gemma3:4b", "gemma4:e4b")
+        ),
     )
     session = DemoSession()
     live = SnapshotStore(tmp_path / "live-ui.db")
@@ -260,7 +264,7 @@ def test_demo_mode_is_explicit_and_never_calls_live_detection_or_discovery(demo_
     ui, session, _, calls = demo_app
     assert ui.radio[0].options == ["Live Network", "Demo Séance"]
     assert any("Demo Séance: simulated network evidence" in info.value for info in ui.info)
-    assert not any(widget.label == "Scan for apparitions" for widget in ui.button)
+    assert not any(widget.label == "Scan network" for widget in ui.button)
     button(ui, "Start Demo").click().run()
     button(ui, "Next Scan").click().run()
     button(ui, "Next Scan").click().run()
@@ -268,8 +272,8 @@ def test_demo_mode_is_explicit_and_never_calls_live_detection_or_discovery(demo_
     assert session.stage == 3
     assert button(ui, "Next Scan").disabled
     assert calls == {"detect": 0, "discover": 0, "live_store": 0}
-    assert any("IP CHANGED (1)" in item.value for item in ui.markdown)
-    assert any("VANISHED (1)" in item.value for item in ui.markdown)
+    assert any("Address updated (1)" in item.value for item in ui.markdown)
+    assert any("Offline since last scan (1)" in item.value for item in ui.markdown)
 
 
 def test_ui_reset_removes_demo_history_and_replays_same_first_scan(demo_app):
@@ -292,9 +296,9 @@ def test_mode_switching_preserves_live_history_and_does_not_mix_results(demo_app
     ui, session, live, calls = demo_app
     ui.radio[0].set_value("Live Network").run()
     assert not ui.exception
-    assert any(widget.label == "Scan for apparitions" for widget in ui.button)
+    assert any(widget.label == "Scan network" for widget in ui.button)
     assert not any(widget.label == "Start Demo" for widget in ui.button)
-    button(ui, "Scan for apparitions").click().run()
+    button(ui, "Scan network").click().run()
     live_before = Path(live.path).read_bytes()
     assert calls["discover"] == 1
     ui.radio[0].set_value("Demo Séance").run()
@@ -331,20 +335,19 @@ def test_ask_ghost_uses_demo_evidence_with_mocked_ollama(demo_app, monkeypatch):
             )
         data = json.loads(request.content)
         report = {
-            "overview": "A simulated device is newly observed [current.device.4].",
+            "overview": "A simulated device is newly observed [E6].",
             "notable_changes": [
                 {
                     "title": "New simulated ESP-style device",
                     "explanation": "192.168.178.47 is unreviewed; its saved type override is smart_home.",
-                    "evidence": ["current.device.4", "change.0"],
+                    "evidence": ["E6", "E12"],
                     "confidence": "high",
                 }
             ],
             "devices_to_verify": [
                 {
-                    "identity": "192.168.178.47",
                     "reason": "Identify the simulated unreviewed device.",
-                    "evidence": ["current.device.4"],
+                    "evidence": ["E6"],
                     "confidence": "medium",
                 }
             ],
@@ -352,7 +355,7 @@ def test_ask_ghost_uses_demo_evidence_with_mocked_ollama(demo_app, monkeypatch):
             "evidence_summary": [
                 {
                     "summary": "Only two simulated scans were supplied.",
-                    "evidence": ["current.scan", "previous.scan"],
+                    "evidence": ["E1", "E7"],
                 }
             ],
         }
@@ -381,10 +384,9 @@ def test_ask_ghost_uses_demo_evidence_with_mocked_ollama(demo_app, monkeypatch):
     assert any("A simulated device" in item.value for item in ui.text)
     assert len(requests) == 2
     prompt = json.loads(requests[-1].content)["messages"][1]["content"]
-    evidence = json.loads(prompt.removeprefix("EVIDENCE:\n").split("\n\nJSON SCHEMA:")[0])
-    assert evidence["facts"]["current.device.4"]["hostname"] == "ESP_32A1"
-    assert evidence["facts"]["current.scan"]["scanner"] == "demo fixture 2 (simulated)"
-    assert evidence["facts"]["previous.scan"]["scanner"] == "demo fixture 1 (simulated)"
+    assert "E6: Device E" in prompt and "ESP_32A1" in prompt
+    assert "demo fixture 2 (simulated)" in prompt
+    assert "demo fixture 1 (simulated)" in prompt
     assert calls == {"detect": 0, "discover": 0, "live_store": 0}
     # Identical scan IDs across stores must not reuse a cached simulated AI report.
     for _ in range(2):
@@ -414,7 +416,7 @@ def test_live_network_remains_the_default_mode(demo_app):
     ).run()
     assert not ui.exception
     assert ui.radio[0].value == "Live Network"
-    assert any(widget.label == "Scan for apparitions" for widget in ui.button)
+    assert any(widget.label == "Scan network" for widget in ui.button)
     assert not any("Demo Séance: simulated" in item.value for item in ui.info)
     assert calls == {"detect": 1, "discover": 0, "live_store": 1}
 
@@ -422,7 +424,7 @@ def test_live_network_remains_the_default_mode(demo_app):
 def test_demo_model_selection_does_not_change_live_preferences(demo_app):
     ui, _, live, calls = demo_app
     live.save_model_preference("live-local-model")
-    next(w for w in ui.text_input if w.label == "Ollama model").set_value("demo-local-model").run()
+    next(w for w in ui.selectbox if w.label == "Local AI model").select("gemma4:e4b").run()
     assert not ui.exception
     assert live.model_preference() == "live-local-model"
     assert calls == {"detect": 0, "discover": 0, "live_store": 0}
